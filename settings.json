@@ -1,0 +1,16 @@
+{
+  "scoreboard": {
+    "show_passivity": false,
+    "show_cautions": false,
+    "show_period": false,
+    "show_opponent_wait_timer": true
+  },
+  "tournament": {
+    "number_of_mats": 1
+  },
+  "timers": {
+    "period_duration": 175,
+    "break_duration": 28,
+    "opponent_wait_duration": 58
+  }
+}
