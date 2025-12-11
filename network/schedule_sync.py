@@ -70,6 +70,8 @@ class ScheduleSyncService:
     ):
         """Запуск сервиса."""
         self.stop()
+        # Небольшая задержка для освобождения порта на Linux
+        time.sleep(0.1)
 
         self.role = role
         self.mat_number = mat_number or 1
@@ -81,9 +83,29 @@ class ScheduleSyncService:
 
         self.running = True
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        # Включаем SO_REUSEADDR для возможности повторного использования порта
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self._sock.settimeout(1.0)
-        self._sock.bind(("", SCHEDULE_SYNC_PORT))
+        
+        # Пытаемся привязать порт с обработкой ошибки "Address already in use"
+        try:
+            self._sock.bind(("", SCHEDULE_SYNC_PORT))
+        except OSError as e:
+            if e.errno == 98 or "Address already in use" in str(e):  # Linux errno 98, Windows может быть другой текст
+                self._log(f"[sync] Порт {SCHEDULE_SYNC_PORT} занят, ожидание освобождения...")
+                time.sleep(0.5)
+                try:
+                    self._sock.close()
+                except:
+                    pass
+                self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+                self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                self._sock.settimeout(1.0)
+                self._sock.bind(("", SCHEDULE_SYNC_PORT))
+            else:
+                raise
 
         self._receiver_thread = threading.Thread(target=self._receiver_loop, daemon=True)
         self._receiver_thread.start()
@@ -96,12 +118,21 @@ class ScheduleSyncService:
     def stop(self):
         """Остановка сервиса."""
         self.running = False
+        
+        # Закрываем сокет, чтобы освободить порт
         if self._sock:
             try:
+                # Закрываем сокет перед закрытием потоков
                 self._sock.close()
             except Exception:
                 pass
-        self._sock = None
+            self._sock = None
+        
+        # Даем потокам время завершиться
+        if self._receiver_thread and self._receiver_thread.is_alive():
+            self._receiver_thread.join(timeout=0.5)
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=0.5)
 
     def push_schedule(self, tournament_data: Dict[str, Any]):
         """Отправка полного расписания всем узлам."""

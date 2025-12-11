@@ -1,10 +1,20 @@
 import sys
 import argparse
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import qRegisterMetaType
+from PyQt5.QtGui import QTextCursor
 from ui.main_window import EnhancedControlPanel
 from core.utils import get_local_ip
 
 def main():
+    # Регистрация мета-типов для устранения предупреждений
+    try:
+        qRegisterMetaType(QTextCursor)
+        # QVector<int> регистрируется как строка
+        qRegisterMetaType("QVector<int>")
+    except:
+        pass  # Если уже зарегистрированы или не поддерживаются
+    
     app = QApplication(sys.argv)
     
     # Аргументы командной строки
