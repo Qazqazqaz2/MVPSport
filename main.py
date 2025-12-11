@@ -1,7 +1,7 @@
 import sys
 import argparse
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import qRegisterMetaType
+from PyQt5.QtCore import QMetaType
 from PyQt5.QtGui import QTextCursor
 from ui.main_window import EnhancedControlPanel
 from core.utils import get_local_ip
@@ -9,9 +9,10 @@ from core.utils import get_local_ip
 def main():
     # Регистрация мета-типов для устранения предупреждений
     try:
-        qRegisterMetaType(QTextCursor)
-        # QVector<int> регистрируется как строка
-        qRegisterMetaType("QVector<int>")
+        # Регистрируем QTextCursor
+        QMetaType.typeName(QMetaType.type("QTextCursor"))
+        # Для QVector<int> используем соответствующую строку
+        QMetaType.typeName(QMetaType.type("QVector<int>"))
     except:
         pass  # Если уже зарегистрированы или не поддерживаются
     
