@@ -252,10 +252,17 @@ class SecretaryWindow(QMainWindow):
         try:
             settings = get_settings()
             n_mats = settings.get("tournament", "number_of_mats", 2)
+            if n_mats < 1:
+                n_mats = 2  # Минимум 2 ковра
+                settings.set("tournament", "number_of_mats", n_mats)
+                print(f"[WARNING] Количество ковров было меньше 1, установлено значение {n_mats}")
             schedule = generate_schedule(self.tournament_data, start_time="10:00", match_duration=8, n_mats=n_mats)
             self.tournament_data['schedule'] = schedule
+            print(f"[INFO] Расписание сгенерировано для {n_mats} ковров")
         except Exception as e:
             print("Ошибка генерации расписания:", e)
+            import traceback
+            traceback.print_exc()
 
     def broadcast_update(self):
         """Отправляет обновлённые данные турнира всем клиентам"""

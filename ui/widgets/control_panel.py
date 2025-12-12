@@ -740,7 +740,7 @@ class InlineMatScheduleWidget(QWidget):
             tournament_data.get("schedule", []), query="", mat_filter=mat_number
         )
         new_table = ScheduleWindow.build_schedule_table(
-            mat_matches, [mat_number], on_double_click=None
+            mat_matches, [mat_number], on_double_click=None, parent=self
         )
         if self.table:
             self.layout().replaceWidget(self.table, new_table)
@@ -2215,6 +2215,9 @@ class ControlPanel(QWidget):
                         w2_data['name'],
                         next_match.get('match_id')
                     )
+                
+                # Отправляем обновление на табло
+                self.send_scoreboard_update()
                 
                 # Обновляем расписание в главном окне
                 main_window = self.window()

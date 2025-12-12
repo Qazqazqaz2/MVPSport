@@ -78,8 +78,20 @@ def filter_schedule_items(schedule, query="", mat_filter=None):
 
     result = []
     for item in schedule:
-        if mat_filter is not None and item.get("mat") != mat_filter:
-            continue
+        if mat_filter is not None:
+            # Нормализуем типы для сравнения (может быть строка или число)
+            item_mat = item.get("mat")
+            if item_mat is not None:
+                # Приводим оба значения к int для сравнения
+                try:
+                    item_mat_int = int(item_mat)
+                    mat_filter_int = int(mat_filter)
+                    if item_mat_int != mat_filter_int:
+                        continue
+                except (ValueError, TypeError):
+                    # Если не удалось преобразовать, сравниваем как строки
+                    if str(item_mat) != str(mat_filter):
+                        continue
         if matches_query(item):
             result.append(item)
     return result
@@ -143,10 +155,16 @@ class ScheduleWindow(QWidget):
         self.update_data(self.tournament_data)
 
     @staticmethod
-    def build_schedule_table(schedule, mats, on_double_click):
-        """Общая сборка таблицы расписания (используется также расписанием на ковре)."""
+    def build_schedule_table(schedule, mats, on_double_click, parent=None):
+        """Общая сборка таблицы расписания (используется также расписанием на ковре).
+        ВАЖНО: должен вызываться только из главного потока Qt!
+        """
+        # Убеждаемся, что мы в главном потоке Qt
+        if QApplication.instance() and QApplication.instance().thread() != QApplication.instance().thread():
+            print("[WARNING] build_schedule_table вызван не из главного потока!")
+        
         if not schedule:
-            empty = QTableWidget()
+            empty = QTableWidget(parent)
             empty.setRowCount(1)
             empty.setColumnCount(1)
             empty.setItem(0, 0, QTableWidgetItem("Расписание не сгенерировано"))
@@ -154,7 +172,8 @@ class ScheduleWindow(QWidget):
 
         n_mats = len(mats)
 
-        table = QTableWidget()
+        # Создаем таблицу с явным указанием родителя для правильного управления потоками
+        table = QTableWidget(parent)
         # Максимум строк — количество матчей (по всем коврам); заполняем динамически по матовым счётчикам
         table.setRowCount(len(schedule) or 1)
         table.setColumnCount(1 + n_mats)
@@ -321,13 +340,13 @@ class ScheduleWindow(QWidget):
     def create_schedule_table(self, mat_filter=None):
         schedule = self.get_filtered_schedule(mat_filter)
         if not schedule:
-            empty = QTableWidget()
+            empty = QTableWidget(self)
             empty.setRowCount(1)
             empty.setColumnCount(1)
             empty.setItem(0, 0, QTableWidgetItem("Расписание не сгенерировано"))
             return empty
         mats = sorted({m['mat'] for m in schedule}) if not mat_filter else [mat_filter]
-        return self.build_schedule_table(schedule, mats, self.on_match_double_click)
+        return self.build_schedule_table(schedule, mats, self.on_match_double_click, parent=self)
 
     @staticmethod
     def _make_match_html(match, mat=None):
@@ -474,12 +493,62 @@ class ScheduleWindow(QWidget):
         self.update_data(self.tournament_data)
 
     def update_data(self, new_tournament_data):
+        """Безопасное обновление данных расписания"""
+        if not new_tournament_data:
+            return
         self.tournament_data = new_tournament_data
-        if hasattr(self, 'schedule_table'):
-            self.schedule_table.setParent(None)
-            self.schedule_table.deleteLater()
-        self.schedule_table = self.create_schedule_table()
-        self.layout().insertWidget(2, self.schedule_table)
+        
+        # Используем QTimer.singleShot для гарантии выполнения в главном потоке
+        QTimer.singleShot(0, self._do_update_data)
+    
+    def _do_update_data(self):
+        """Внутренний метод для обновления данных (выполняется в главном потоке)"""
+        if not hasattr(self, 'schedule_table'):
+            # Если таблицы еще нет, создаем ее
+            try:
+                self.schedule_table = self.create_schedule_table()
+                if self.schedule_table:
+                    layout = self.layout()
+                    layout.insertWidget(2, self.schedule_table)
+            except Exception as e:
+                print(f"[ERROR] Ошибка создания таблицы расписания: {e}")
+            return
+        
+        if not self.schedule_table:
+            return
+        
+        try:
+            # Удаляем старую таблицу безопасно
+            old_table = self.schedule_table
+            layout = self.layout()
+            
+            # Сначала удаляем из layout
+            if old_table.parent() == self:
+                layout.removeWidget(old_table)
+            
+            # Затем очищаем родителя и удаляем
+            old_table.setParent(None)
+            old_table.deleteLater()
+            
+            # Небольшая задержка перед созданием нового виджета для завершения удаления
+            QTimer.singleShot(10, self._create_new_table)
+        except Exception as e:
+            print(f"[ERROR] Ошибка обновления расписания: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _create_new_table(self):
+        """Создает новую таблицу после удаления старой"""
+        try:
+            # Создаем новую таблицу с правильным родителем
+            self.schedule_table = self.create_schedule_table()
+            if self.schedule_table:
+                layout = self.layout()
+                layout.insertWidget(2, self.schedule_table)
+        except Exception as e:
+            print(f"[ERROR] Ошибка создания новой таблицы расписания: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 # ===================================================================
@@ -557,11 +626,21 @@ class ScheduleMainWindow(QMainWindow):
 class MatScheduleWindow(QWidget):
     match_selected = pyqtSignal(dict)
 
-    def __init__(self, tournament_data, parent=None, network_manager=None):
+    def __init__(self, tournament_data, parent=None, network_manager=None, default_mat=None):
         super().__init__(parent)
         self.tournament_data = tournament_data
         self.network_manager = network_manager
-        self.current_mat = 1
+        # Используем default_mat если указан, иначе берем из настроек или 1
+        if default_mat is not None:
+            self.current_mat = int(default_mat)
+        else:
+            # Пытаемся получить из настроек через родителя
+            try:
+                from core.settings import get_settings
+                settings = get_settings()
+                self.current_mat = settings.get("network", "mat_number", 1)
+            except:
+                self.current_mat = 1
         self.search_query = ""
         self.setup_ui()
 
@@ -587,6 +666,10 @@ class MatScheduleWindow(QWidget):
         self.mat_combo = QComboBox()
         self.mat_combo.setFont(QFont("", 16))
         self.mat_combo.addItems(["1", "2", "3", "4"])
+        # Устанавливаем текущий номер ковра из настроек или переданного значения
+        mat_index = self.current_mat - 1
+        if 0 <= mat_index < self.mat_combo.count():
+            self.mat_combo.setCurrentIndex(mat_index)
         self.mat_combo.setStyleSheet("""
             QComboBox {
                 padding: 8px;
@@ -652,34 +735,57 @@ class MatScheduleWindow(QWidget):
         self.update_mat_schedule()
 
     def update_mat_schedule(self):
+        """Безопасное обновление расписания на ковре (выполняется в главном потоке)"""
         if not self.tournament_data or 'schedule' not in self.tournament_data:
             if self.schedule_table:
                 self.schedule_table.setRowCount(0)
             return
 
-        self.current_mat = int(self.mat_combo.currentText())
-        mat_matches = filter_schedule_items(self.tournament_data.get('schedule', []), self.search_query, self.current_mat)
+        try:
+            self.current_mat = int(self.mat_combo.currentText())
+            schedule = self.tournament_data.get('schedule', [])
+            
+            # Отладочная информация
+            if schedule:
+                mats_in_schedule = set()
+                for item in schedule:
+                    mat_val = item.get("mat")
+                    if mat_val is not None:
+                        mats_in_schedule.add(str(mat_val))
+                print(f"[DEBUG] Расписание на ковре {self.current_mat}: найдено {len(schedule)} записей, ковры в расписании: {sorted(mats_in_schedule)}")
+            
+            mat_matches = filter_schedule_items(schedule, self.search_query, self.current_mat)
+            print(f"[DEBUG] После фильтрации по ковру {self.current_mat}: найдено {len(mat_matches)} матчей")
 
-        # Перестраиваем таблицу из общей функции, чтобы стили совпадали с расписанием турнира
-        new_table = ScheduleWindow.build_schedule_table(mat_matches, [self.current_mat], self.on_match_double_click)
-        new_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        new_table.customContextMenuRequested.connect(self.show_context_menu)
-        new_table.itemDoubleClicked.connect(self.on_match_double_click)
-        delegate = HtmlDelegate(new_table)
-        new_table.setItemDelegate(delegate)
+            # Перестраиваем таблицу из общей функции, чтобы стили совпадали с расписанием турнира
+            # Важно: передаем self как parent для правильного управления потоками
+            new_table = ScheduleWindow.build_schedule_table(mat_matches, [self.current_mat], self.on_match_double_click, parent=self)
+            new_table.setContextMenuPolicy(Qt.CustomContextMenu)
+            new_table.customContextMenuRequested.connect(self.show_context_menu)
+            new_table.itemDoubleClicked.connect(self.on_match_double_click)
+            delegate = HtmlDelegate(new_table)
+            new_table.setItemDelegate(delegate)
 
-        if self.schedule_table:
-            self.schedule_table.setParent(None)
-            self.schedule_table.deleteLater()
-        self.schedule_table = new_table
-
-        layout = self.layout()
-        if self._table_placeholder:
-            layout.replaceWidget(self._table_placeholder, self.schedule_table)
-            self._table_placeholder.setParent(None)
-            self._table_placeholder = None
-        else:
-            layout.insertWidget(3, self.schedule_table)
+            # Безопасно заменяем старую таблицу
+            layout = self.layout()
+            old_table = self.schedule_table
+            
+            if old_table:
+                if old_table.parent() == self:
+                    layout.removeWidget(old_table)
+                old_table.setParent(None)
+                old_table.deleteLater()
+            
+            self.schedule_table = new_table
+            
+            if self._table_placeholder:
+                layout.replaceWidget(self._table_placeholder, self.schedule_table)
+                self._table_placeholder.setParent(None)
+                self._table_placeholder = None
+            else:
+                layout.insertWidget(3, self.schedule_table)
+        except Exception as e:
+            print(f"[ERROR] Ошибка обновления расписания на ковре: {e}")
 
 
     def show_context_menu(self, pos):
@@ -794,5 +900,10 @@ class MatScheduleWindow(QWidget):
     #  Обновление данных
     # --------------------------------------------------------------
     def update_data(self, new_tournament_data):
+        """Безопасное обновление данных расписания на ковре"""
+        if not new_tournament_data:
+            return
         self.tournament_data = new_tournament_data
-        self.update_mat_schedule()
+        # Используем QTimer.singleShot для гарантии выполнения в главном потоке
+        # Не используем update_mat_schedule напрямую, так как он уже вызывается из главного потока
+        QTimer.singleShot(0, lambda: self.update_mat_schedule())

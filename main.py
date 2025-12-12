@@ -12,16 +12,22 @@ def main():
     
     # Регистрация мета-типов для устранения предупреждений
     try:
-        # Регистрируем QTextCursor (нужен для queued-сигналов)
-        QMetaType.registerType(QTextCursor.__name__)
-        # Для QVector<int> регистрируем строкой
-        QMetaType.registerType("QVector<int>")
-        # Дополнительно через qRegisterMetaType, если доступен
-        if hasattr(QtCore, "qRegisterMetaType"):
-            QtCore.qRegisterMetaType(QTextCursor)
-            QtCore.qRegisterMetaType("QVector<int>")
-    except Exception:
-        pass  # Если уже зарегистрированы или не поддерживаются
+        # Регистрируем QTextCursor для queued-сигналов
+        QtCore.qRegisterMetaType(QTextCursor)
+        # Регистрируем QVector<int> как строку (C++ шаблонный тип)
+        QtCore.qRegisterMetaType("QVector<int>")
+        # Также регистрируем через QMetaType для совместимости
+        try:
+            from PyQt5.QtCore import QVariant
+            # Регистрируем типы для использования в сигналах
+            if not QMetaType.type("QVector<int>"):
+                QMetaType.registerType("QVector<int>")
+        except:
+            pass
+    except Exception as e:
+        # Типы могут быть уже зарегистрированы или не поддерживаться
+        # Это не критично, предупреждения не влияют на работу приложения
+        pass
     
     # Аргументы командной строки
     parser = argparse.ArgumentParser(description='Система управления борьбой')

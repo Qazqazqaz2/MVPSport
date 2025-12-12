@@ -148,15 +148,41 @@ class EnhancedControlPanel(QMainWindow):
         """Применение расписания, полученного через модуль синхронизации (вызывается из главного потока)."""
         if not schedule:
             return
+        
+        # Отладочная информация о входящем расписании
+        mats_in_incoming = {}
+        for item in schedule:
+            mat = item.get("mat")
+            mats_in_incoming[mat] = mats_in_incoming.get(mat, 0) + 1
+        print(f"[DEBUG sync] Входящее расписание от {sender_ip}: {len(schedule)} записей, ковры: {mats_in_incoming}")
+        
         if self.tournament_data is None:
             self.tournament_data = {}
+        
+        existing_schedule = self.tournament_data.get('schedule', [])
+        if existing_schedule:
+            mats_in_existing = {}
+            for item in existing_schedule:
+                mat = item.get("mat")
+                mats_in_existing[mat] = mats_in_existing.get(mat, 0) + 1
+            print(f"[DEBUG sync] Существующее расписание: {len(existing_schedule)} записей, ковры: {mats_in_existing}")
+        
         self.tournament_data['schedule'] = self._merge_schedule(
-            self.tournament_data.get('schedule', []),
+            existing_schedule,
             schedule
         )
         
-        self.update_schedule_tab()
-        print(f"[sync] Расписание обновлено из {sender_ip} ({len(schedule)} записей, всего: {len(self.tournament_data.get('schedule', []))})")
+        # Отладочная информация о результате слияния
+        merged_schedule = self.tournament_data['schedule']
+        mats_in_merged = {}
+        for item in merged_schedule:
+            mat = item.get("mat")
+            mats_in_merged[mat] = mats_in_merged.get(mat, 0) + 1
+        print(f"[DEBUG sync] После слияния: {len(merged_schedule)} записей, ковры: {mats_in_merged}")
+        
+        # Используем QTimer.singleShot для гарантии выполнения в главном потоке
+        QTimer.singleShot(0, self.update_schedule_tab)
+        print(f"[sync] Расписание обновлено из {sender_ip} ({len(schedule)} записей, всего: {len(merged_schedule)})")
 
     @staticmethod
     def _merge_schedule(existing_schedule, incoming_schedule):
@@ -464,17 +490,30 @@ class EnhancedControlPanel(QMainWindow):
             self.status_text.setPlainText("Турнир не начат. Используйте импорт данных для начала работы.")
 
     def update_schedule_tab(self):
-        """Обновляет окно расписания если оно открыто"""
-        # Обновляем отдельное окно расписания, если оно открыто
-        for window in QApplication.topLevelWidgets():
-            if isinstance(window, ScheduleMainWindow):
-                window.update_data(self.tournament_data)
+        """Обновляет окно расписания если оно открыто (вызывается из главного потока)"""
+        if not self.tournament_data:
+            return
         
-        # Обновляем вкладки расписания на ковре
-        for i in range(self.tab_widget.count()):
-            widget = self.tab_widget.widget(i)
-            if isinstance(widget, MatScheduleWindow):
-                widget.update_data(self.tournament_data)
+        try:
+            # Обновляем отдельное окно расписания, если оно открыто
+            for window in QApplication.topLevelWidgets():
+                if isinstance(window, ScheduleMainWindow) and window.isVisible():
+                    try:
+                        window.update_data(self.tournament_data)
+                    except Exception as e:
+                        print(f"[ERROR] Ошибка обновления окна расписания: {e}")
+            
+            # Обновляем вкладки расписания на ковре
+            if hasattr(self, 'tab_widget') and self.tab_widget:
+                for i in range(self.tab_widget.count()):
+                    widget = self.tab_widget.widget(i)
+                    if isinstance(widget, MatScheduleWindow):
+                        try:
+                            widget.update_data(self.tournament_data)
+                        except Exception as e:
+                            print(f"[ERROR] Ошибка обновления вкладки расписания: {e}")
+        except Exception as e:
+            print(f"[ERROR] Критическая ошибка при обновлении расписания: {e}")
 
     def closeEvent(self, event):
         """Обработчик закрытия приложения"""
