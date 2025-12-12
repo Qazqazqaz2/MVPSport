@@ -9,7 +9,18 @@ from PyQt5.QtGui import QIntValidator
 import json
 import time
 import re
-import winsound
+
+class DummyWinsound:
+    @staticmethod
+    def Beep(frequency, duration):
+        print(f"Beep: {frequency}Hz for {duration}ms")
+        pass
+
+try:
+    import winsound
+except ImportError:
+    winsound = DummyWinsound()
+
 from datetime import datetime
 from core.constants import *
 from core.models import Wrestler, MatchHistory

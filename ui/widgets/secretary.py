@@ -270,7 +270,35 @@ class SecretaryWindow(QMainWindow):
         """Применяет расписание, пришедшее по сети."""
         if not schedule:
             return
-        self.tournament_data['schedule'] = schedule
+        # Объединяем расписание, чтобы не терять данные других ковров
+        def make_key(m):
+            mid = m.get('match_id')
+            if mid:
+                return ('id', mid)
+            return (
+                'tuple',
+                m.get('category', ''),
+                m.get('wrestler1', ''),
+                m.get('wrestler2', ''),
+                m.get('mat', 0),
+                m.get('time', ''),
+                m.get('round', 0),
+            )
+
+        existing = self.tournament_data.get('schedule', []) if isinstance(self.tournament_data, dict) else []
+        merged = {}
+        for m in existing:
+            merged[make_key(m)] = m
+        for m in schedule:
+            merged[make_key(m)] = m
+        merged_list = list(merged.values())
+        merged_list.sort(key=lambda x: (
+            x.get('time', ''),
+            x.get('mat', 0),
+            x.get('round', 0),
+            x.get('match_id', '')
+        ))
+        self.tournament_data['schedule'] = merged_list
         # уведомляем главное окно о смене данных
         if self.parent() and hasattr(self.parent(), 'update_schedule_tab'):
             self.parent().update_schedule_tab()

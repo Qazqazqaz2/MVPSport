@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QTabWidget, 
                              QPushButton, QGroupBox, QTextEdit, QLabel, QMessageBox, QInputDialog, QHBoxLayout)
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, pyqtSignal, QMetaObject, Qt
 from core.network import NetworkManager
 from ui.widgets.scoreboard import ScoreboardDisplay, ScoreboardWindow
 from ui.widgets.control_panel import ControlPanel
@@ -16,6 +16,8 @@ from core.settings import get_settings
 from network.schedule_sync import ScheduleSyncService
 
 class EnhancedControlPanel(QMainWindow):
+    # Сигналы для безопасного обновления UI из потоков
+    schedule_update_signal = pyqtSignal(list, str)  # schedule, sender_ip
     def __init__(self, is_secondary=False, server_host=None):
         super().__init__()
         self.tournament_data = None
@@ -27,8 +29,10 @@ class EnhancedControlPanel(QMainWindow):
         self.network_manager = NetworkManager()
         self.network_manager.register_handler('tournament_update', self.handle_tournament_update)
         self.settings = get_settings()
+        # Подключаем сигнал для безопасного обновления UI из потока
+        self.schedule_update_signal.connect(self._on_schedule_from_sync_safe)
         self.schedule_sync_service = ScheduleSyncService(
-            on_schedule_received=self._on_schedule_from_sync,
+            on_schedule_received=self._on_schedule_from_sync_thread_safe,
             on_log=lambda msg: print(msg)
         )
         self._auto_start_schedule_sync()
@@ -126,19 +130,70 @@ class EnhancedControlPanel(QMainWindow):
             widget = self.tab_widget.widget(i)
             if isinstance(widget, MatScheduleWindow):
                 widget.update_data(new_data)
+        
+        # Обновляем расписания в панелях управления
+        for i in range(self.tab_widget.count()):
+            widget = self.tab_widget.widget(i)
+            if isinstance(widget, ControlPanel) and hasattr(widget, 'refresh_inline_schedule'):
+                widget.refresh_inline_schedule()
 
         # Рассылаем расписание через модуль синхронизации (если мы координатор)
         self._push_schedule_to_sync()
 
-    def _on_schedule_from_sync(self, schedule, sender_ip=None):
-        """Применение расписания, полученного через модуль синхронизации."""
+    def _on_schedule_from_sync_thread_safe(self, schedule, sender_ip=None):
+        """Безопасный вызов из потока - эмитирует сигнал."""
+        self.schedule_update_signal.emit(schedule, sender_ip or "")
+    
+    def _on_schedule_from_sync_safe(self, schedule, sender_ip=None):
+        """Применение расписания, полученного через модуль синхронизации (вызывается из главного потока)."""
         if not schedule:
             return
         if self.tournament_data is None:
             self.tournament_data = {}
-        self.tournament_data['schedule'] = schedule
+        self.tournament_data['schedule'] = self._merge_schedule(
+            self.tournament_data.get('schedule', []),
+            schedule
+        )
+        
         self.update_schedule_tab()
-        print(f"[sync] Расписание обновлено из {sender_ip}")
+        print(f"[sync] Расписание обновлено из {sender_ip} ({len(schedule)} записей, всего: {len(self.tournament_data.get('schedule', []))})")
+
+    @staticmethod
+    def _merge_schedule(existing_schedule, incoming_schedule):
+        """Объединяет расписания, не теряя матчи с других ковров."""
+        if not existing_schedule:
+            return list(incoming_schedule or [])
+        if not incoming_schedule:
+            return list(existing_schedule or [])
+
+        def make_key(m):
+            match_id = m.get('match_id')
+            if match_id:
+                return ('id', match_id)
+            return (
+                'tuple',
+                m.get('category', ''),
+                m.get('wrestler1', ''),
+                m.get('wrestler2', ''),
+                m.get('mat', 0),
+                m.get('time', ''),
+                m.get('round', 0),
+            )
+
+        merged = {}
+        for m in existing_schedule:
+            merged[make_key(m)] = m
+        for m in incoming_schedule:
+            merged[make_key(m)] = m
+
+        result = list(merged.values())
+        result.sort(key=lambda x: (
+            x.get('time', ''),
+            x.get('mat', 0),
+            x.get('round', 0),
+            x.get('match_id', '')
+        ))
+        return result
 
     def create_main_tab(self):
         """Создает главную вкладку с кнопками управления"""
@@ -235,14 +290,18 @@ class EnhancedControlPanel(QMainWindow):
         settings_window = SettingsWindow(self)
         settings_window.exec_()
 
-    def open_mat_schedule_tab(self):
+    def open_mat_schedule_tab(self, mat_number=None):
         """Открывает вкладку с расписанием на ковре"""
         if not self.tournament_data:
             QMessageBox.warning(self, "Внимание", "Сначала загрузите турнир")
             return
+        
+        # Если mat_number не указан, берем из настроек устройства
+        if mat_number is None:
+            mat_number = self.settings.get("network", "mat_number", 1)
             
         if not self.tab_exists("Расписание на ковре"):
-            mat_schedule = MatScheduleWindow(self.tournament_data, self, self.network_manager)
+            mat_schedule = MatScheduleWindow(self.tournament_data, self, self.network_manager, default_mat=mat_number)
             mat_schedule.match_selected.connect(self.start_match_from_schedule)
             self.tab_widget.addTab(mat_schedule, "Расписание на ковре")
             self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)

@@ -1,5 +1,6 @@
 import sys
 import argparse
+from PyQt5 import QtCore
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QMetaType
 from PyQt5.QtGui import QTextCursor
@@ -15,7 +16,11 @@ def main():
         QMetaType.registerType(QTextCursor.__name__)
         # Для QVector<int> регистрируем строкой
         QMetaType.registerType("QVector<int>")
-    except:
+        # Дополнительно через qRegisterMetaType, если доступен
+        if hasattr(QtCore, "qRegisterMetaType"):
+            QtCore.qRegisterMetaType(QTextCursor)
+            QtCore.qRegisterMetaType("QVector<int>")
+    except Exception:
         pass  # Если уже зарегистрированы или не поддерживаются
     
     # Аргументы командной строки
