@@ -7,16 +7,16 @@ from ui.main_window import EnhancedControlPanel
 from core.utils import get_local_ip
 
 def main():
+    app = QApplication(sys.argv)
+    
     # Регистрация мета-типов для устранения предупреждений
     try:
-        # Регистрируем QTextCursor
-        QMetaType.typeName(QMetaType.type("QTextCursor"))
-        # Для QVector<int> используем соответствующую строку
-        QMetaType.typeName(QMetaType.type("QVector<int>"))
+        # Регистрируем QTextCursor (нужен для queued-сигналов)
+        QMetaType.registerType(QTextCursor.__name__)
+        # Для QVector<int> регистрируем строкой
+        QMetaType.registerType("QVector<int>")
     except:
         pass  # Если уже зарегистрированы или не поддерживаются
-    
-    app = QApplication(sys.argv)
     
     # Аргументы командной строки
     parser = argparse.ArgumentParser(description='Система управления борьбой')

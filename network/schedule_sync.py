@@ -3,7 +3,7 @@ import socket
 import threading
 import time
 import hashlib
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, List
 
 from core.constants import (
     SCHEDULE_SYNC_PORT,
@@ -20,6 +20,39 @@ def _hash_schedule(schedule: Any) -> str:
         return hashlib.sha256(dumped.encode("utf-8")).hexdigest()
     except Exception:
         return ""
+
+
+def _deduplicate_schedule(schedule: Any) -> Any:
+    """
+    Убирает дубли матчей по match_id (с сохранением порядка).
+    Если match_id пуст, используем ключ по набору полей, чтобы не плодить копии.
+    """
+    if not isinstance(schedule, list):
+        return schedule
+
+    seen_ids = set()
+    cleaned = []
+    for match in schedule:
+        if not isinstance(match, dict):
+            continue
+        mid = match.get("match_id") or match.get("id")
+        key = mid or (
+            match.get("category"),
+            match.get("wrestler1"),
+            match.get("wrestler2"),
+            match.get("mat"),
+            match.get("time"),
+            match.get("round"),
+        )
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
+        cleaned.append(match)
+    return cleaned
+
+
+MAX_UDP_PAYLOAD = 60000  # небольшой запас от системного лимита ~64К для UDP
+DEFAULT_SCHEDULE_CHUNK = 80  # кол-во матчей в одном пакете (держим размером < MAX_UDP_PAYLOAD)
 
 
 class ScheduleSyncService:
@@ -56,6 +89,8 @@ class ScheduleSyncService:
 
         self.schedule_hash = ""
         self.peers: Dict[str, Dict[str, Any]] = {}
+        # Хранилище собираемых чанков расписания: transfer_id -> {"total": int, "received": {idx: part}, "hash": str}
+        self._incoming_schedule_parts: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------ #
     #  Public API
@@ -136,7 +171,7 @@ class ScheduleSyncService:
 
     def push_schedule(self, tournament_data: Dict[str, Any]):
         """Отправка полного расписания всем узлам."""
-        schedule = (tournament_data or {}).get("schedule", [])
+        schedule = _deduplicate_schedule((tournament_data or {}).get("schedule", []))
         self.schedule_hash = _hash_schedule(schedule)
         payload = {
             "type": "schedule_full",
@@ -148,8 +183,14 @@ class ScheduleSyncService:
             "device_id": self.device_id,
             "ts": time.time(),
         }
-        self._send(payload)
-        self._log(f"[sync] отправлено расписание ({len(schedule)} записей)")
+
+        # Пробуем отправить одним пакетом; если не помещается в безопасный размер UDP — шлем чанками
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if len(raw) <= MAX_UDP_PAYLOAD:
+            self._send(payload)
+            self._log(f"[sync] отправлено расписание ({len(schedule)} записей)")
+        else:
+            self._send_schedule_chunks(schedule)
 
     def send_mat_status(self, status: str, current_match: Optional[str] = None):
         """Отправка статуса ковра координатору/узлам."""
@@ -220,6 +261,33 @@ class ScheduleSyncService:
         except Exception as e:
             self._log(f"[sync] ошибка отправки: {e}")
 
+    def _send_schedule_chunks(self, schedule: List[Any]):
+        """Безопасно отправляет расписание несколькими пакетами, чтобы избежать переполнения UDP."""
+        chunk_size = DEFAULT_SCHEDULE_CHUNK
+        total_chunks = max(1, (len(schedule) + chunk_size - 1) // chunk_size)
+        transfer_id = f"{self.schedule_hash}-{int(time.time()*1000)}"
+
+        for idx in range(total_chunks):
+            part = schedule[idx * chunk_size : (idx + 1) * chunk_size]
+            payload = {
+                "type": "schedule_chunk",
+                "chunk_index": idx,
+                "total_chunks": total_chunks,
+                "schedule_part": part,
+                "schedule_hash": self.schedule_hash,
+                "role": self.role,
+                "mat": self.mat_number,
+                "device": self.device_name,
+                "device_id": self.device_id,
+                "transfer_id": transfer_id,
+                "ts": time.time(),
+            }
+            self._send(payload)
+
+        self._log(
+            f"[sync] отправлено расписание чанками ({len(schedule)} записей, {total_chunks} пакетов)"
+        )
+
     def _handle_message(self, message: Dict[str, Any], sender_ip: str):
         if not isinstance(message, dict):
             return
@@ -254,10 +322,51 @@ class ScheduleSyncService:
             if incoming_hash and incoming_hash != self.schedule_hash:
                 self.schedule_hash = incoming_hash
                 if self.on_schedule_received:
-                    self.on_schedule_received(message.get("schedule"), sender_ip)
+                    self.on_schedule_received(
+                        _deduplicate_schedule(message.get("schedule")), sender_ip
+                    )
                 # Ретрансляция при необходимости
                 if self.allow_relay and self.role != "coordinator":
                     self._send(message)
+        elif msg_type == "schedule_chunk":
+            transfer_id = message.get("transfer_id") or message.get("schedule_hash") or ""
+            chunk_idx = message.get("chunk_index")
+            total_chunks = message.get("total_chunks") or 1
+            incoming_hash = message.get("schedule_hash", "")
+            part = message.get("schedule_part") or []
+
+            # Валидация индекса
+            if chunk_idx is None or chunk_idx < 0 or chunk_idx >= total_chunks:
+                return
+
+            # Сохраняем кусок
+            entry = self._incoming_schedule_parts.setdefault(
+                transfer_id,
+                {"total": total_chunks, "received": {}, "hash": incoming_hash, "ts": time.time()},
+            )
+            entry["received"][chunk_idx] = part
+            entry["total"] = total_chunks  # на случай, если первый пакет пришел не первым
+            entry["hash"] = incoming_hash or entry.get("hash", "")
+
+            # Ретрансляция чанка для покрытия сети (аналогично полной отправке)
+            if self.allow_relay and self.role != "coordinator":
+                self._send(message)
+
+            # Проверяем, собрали ли всё
+            if len(entry["received"]) >= entry["total"]:
+                combined: List[Any] = []
+                for idx in range(entry["total"]):
+                    combined.extend(entry["received"].get(idx, []))
+
+                self._incoming_schedule_parts.pop(transfer_id, None)
+
+                if entry["hash"] and entry["hash"] != self.schedule_hash:
+                    self.schedule_hash = entry["hash"]
+                    if self.on_schedule_received:
+                        self.on_schedule_received(_deduplicate_schedule(combined), sender_ip)
+                    if self.allow_relay and self.role != "coordinator":
+                        # Рассылаем дальше уже собранное расписание, соблюдая лимит
+                        self._send_schedule_chunks(_deduplicate_schedule(combined))
         elif msg_type == "mat_status":
             # Координатор обновляет статус ковра
             pass  # статус уже записан в peers

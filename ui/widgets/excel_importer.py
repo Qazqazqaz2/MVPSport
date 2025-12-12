@@ -715,10 +715,10 @@ class ExcelImporter(QWidget):
                 "matches": [],
             }
 
-        # Создаём круговую сетку для каждой категории
+            # Создаём сетку для каждой категории: авто-выбор типа (круг если <=5, иначе олимпийка)
         for category_name, data in categories.items():
             participants = data["participants"]
-            bracket = create_bracket(participants, category_name, bracket_type="round_robin")
+            bracket = create_bracket(participants, category_name, bracket_type=None)
             categories[category_name]["matches"] = bracket["matches"]
             categories[category_name]["type"] = bracket["type"]
 
@@ -760,11 +760,10 @@ class ExcelImporter(QWidget):
             
             categories[category_name]['participants'].append(wrestler)
         
-        # Создаем матчи (круговые сетки) для каждой категории
+        # Создаем матчи для каждой категории (автовыбор типа сетки)
         for category_name, data in categories.items():
             participants = data['participants']
-            # Принудительно создаём круговую систему
-            bracket = create_bracket(participants, category_name, bracket_type='round_robin')
+            bracket = create_bracket(participants, category_name, bracket_type=None)
             categories[category_name]['matches'] = bracket['matches']
             categories[category_name]['type'] = bracket['type']
         

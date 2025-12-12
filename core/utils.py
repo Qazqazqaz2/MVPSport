@@ -183,6 +183,13 @@ def generate_schedule(tournament_data, start_time="10:00", match_duration=8, n_m
         key=lambda x: extract_weight(x[0])
     )
     
+    # Подготовим быстрый поиск участников по имени (игнорируем пустые имена)
+    participants = [
+        p for p in tournament_data.get("participants", [])
+        if isinstance(p, dict) and p.get("name") and str(p.get("name")).strip()
+    ]
+    participant_by_name = {str(p["name"]).strip(): p for p in participants}
+
     # Собираем все матчи из всех категорий в отсортированном порядке
     all_matches = []
     for category_name, cat_data in categories_sorted:
@@ -192,15 +199,11 @@ def generate_schedule(tournament_data, start_time="10:00", match_duration=8, n_m
             w2_name = match.get("wrestler2", "")
             
             # Ищем полные данные участников (name) из списка участников турнира
-            # чтобы гарантированно использовать полное ФИО (name)
-            if tournament_data.get("participants"):
-                for participant in tournament_data["participants"]:
-                    participant_name = participant.get("name", "")
-                    # Если имя совпадает (полное или частичное), используем полное name из участника
-                    if participant_name == w1_name or w1_name in participant_name or participant_name in w1_name:
-                        w1_name = participant.get("name", w1_name)
-                    if participant_name == w2_name or w2_name in participant_name or participant_name in w2_name:
-                        w2_name = participant.get("name", w2_name)
+            # Используем точное совпадение по имени, игнорируя пустые строки
+            if w1_name in participant_by_name:
+                w1_name = participant_by_name[w1_name]["name"]
+            if w2_name in participant_by_name:
+                w2_name = participant_by_name[w2_name]["name"]
             
             # Получаем клубы/цвета участников
             club1 = match.get("club1", "")
@@ -210,14 +213,13 @@ def generate_schedule(tournament_data, start_time="10:00", match_duration=8, n_m
             
             # Если клубы не указаны в матче, ищем их в участниках
             if not club1 or not club2:
-                if tournament_data.get("participants"):
-                    for participant in tournament_data["participants"]:
-                        if participant.get("name", "") == w1_name:
-                            club1 = participant.get("club", club1)
-                            color1 = participant.get("color", color1)
-                        if participant.get("name", "") == w2_name:
-                            club2 = participant.get("club", club2)
-                            color2 = participant.get("color", color2)
+                for participant in participants:
+                    if participant.get("name") == w1_name:
+                        club1 = participant.get("club", club1)
+                        color1 = participant.get("color", color1)
+                    if participant.get("name") == w2_name:
+                        club2 = participant.get("club", club2)
+                        color2 = participant.get("color", color2)
             
             all_matches.append({
                 "category": category_name,
