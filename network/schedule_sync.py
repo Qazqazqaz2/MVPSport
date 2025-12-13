@@ -70,10 +70,12 @@ class ScheduleSyncService:
         on_schedule_received: Optional[Callable[[Any, str], None]] = None,
         on_peer_update: Optional[Callable[[Dict[str, Dict[str, Any]]], None]] = None,
         on_log: Optional[Callable[[str], None]] = None,
+        on_log_received: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         self.on_schedule_received = on_schedule_received
         self.on_peer_update = on_peer_update
         self.on_log = on_log
+        self.on_log_received = on_log_received
 
         self.role = "node"
         self.device_name = socket.gethostname()
@@ -260,6 +262,24 @@ class ScheduleSyncService:
             self._sock.sendto(raw, addr)
         except Exception as e:
             self._log(f"[sync] ошибка отправки: {e}")
+    
+    def send_log(self, log_data: Dict[str, Any]):
+        """Отправляет лог-запись на coordinator"""
+        if self.role == "coordinator":
+            # Если мы coordinator, не отправляем сами себе
+            return
+        
+        if not self.coordinator_host:
+            return
+        
+        payload = {
+            "type": "log_entry",
+            "log_data": log_data,
+            "device": self.device_name,
+            "device_id": self.device_id,
+            "ts": time.time(),
+        }
+        self._send(payload, target=self.coordinator_host)
 
     def _send_schedule_chunks(self, schedule: List[Any]):
         """Безопасно отправляет расписание несколькими пакетами, чтобы избежать переполнения UDP."""
@@ -373,6 +393,10 @@ class ScheduleSyncService:
         elif msg_type == "heartbeat":
             # Дополнительно ничего не делаем, peers уже обновили
             pass
+        elif msg_type == "log_entry":
+            # Получен лог от другого устройства - сохраняем на coordinator
+            if self.role == "coordinator" and self.on_log_received:
+                self.on_log_received(message.get("log_data", {}))
 
     def _drop_stale_peers(self):
         """Убираем узлы, которые давно не отвечали."""

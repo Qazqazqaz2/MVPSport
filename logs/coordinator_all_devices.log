@@ -1,0 +1,3 @@
+{"timestamp": "2025-12-13T08:22:35.819726", "device": "Устройство1", "device_id": "Устройство1-1765603355818", "type": "INFO", "message": "Приложение запущено", "context": {"argv": [".\\main.py"], "role": "coordinator", "is_secondary": false}, "level": "INFO"}
+{"timestamp": "2025-12-13T08:23:18.395223", "device": "Устройство1", "device_id": "Устройство1-1765603355818", "type": "INFO", "message": "Приложение закрывается", "context": {"is_secondary": false}, "level": "INFO"}
+{"timestamp": "2025-12-13T08:23:18.906943", "device": "Устройство1", "device_id": "Устройство1-1765603355818", "type": "INFO", "message": "Приложение завершено нормально", "context": {"exit_code": 0}, "level": "INFO"}

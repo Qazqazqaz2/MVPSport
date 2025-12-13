@@ -14,6 +14,7 @@ from ui.widgets.settings_window import SettingsWindow
 from core.utils import get_local_ip
 from core.settings import get_settings
 from network.schedule_sync import ScheduleSyncService
+from core.logger import get_logger
 
 class EnhancedControlPanel(QMainWindow):
     # Сигналы для безопасного обновления UI из потоков
@@ -31,10 +32,29 @@ class EnhancedControlPanel(QMainWindow):
         self.settings = get_settings()
         # Подключаем сигнал для безопасного обновления UI из потока
         self.schedule_update_signal.connect(self._on_schedule_from_sync_safe)
+        
+        # Инициализируем логирование
+        logger = get_logger()
+        if logger:
+            # Обновляем параметры логгера на основе настроек
+            device_name = self.settings.get("network", "device_name", "Устройство")
+            coordinator_host = self.settings.get("network", "coordinator_host", "")
+            net_role_default = "node" if self.is_secondary else "coordinator"
+            net_role = self.settings.get("network", "role", net_role_default)
+            logger.role = net_role
+            logger.coordinator_host = coordinator_host if coordinator_host else None
+        
+        # Создаем schedule_sync_service с обработчиком логов
         self.schedule_sync_service = ScheduleSyncService(
             on_schedule_received=self._on_schedule_from_sync_thread_safe,
-            on_log=lambda msg: print(msg)
+            on_log=lambda msg: print(msg),
+            on_log_received=self._on_log_received if logger and logger.role == "coordinator" else None
         )
+        
+        # Устанавливаем функцию отправки логов в логгер
+        if logger:
+            logger.on_log_send = self._send_log_to_coordinator
+        
         self._auto_start_schedule_sync()
         
         # Настройка сетевого взаимодействия
@@ -518,16 +538,67 @@ class EnhancedControlPanel(QMainWindow):
 
     def closeEvent(self, event):
         """Обработчик закрытия приложения"""
-        if hasattr(self, 'tournament_data') and self.tournament_data:
-            self.save_tournament_data()
+        logger = get_logger()
+        if logger:
+            logger.log_info("Приложение закрывается", {"is_secondary": self.is_secondary})
         
-        if hasattr(self, 'network_manager'):
-            self.network_manager.stop()
+        try:
+            if hasattr(self, 'tournament_data') and self.tournament_data:
+                self.save_tournament_data()
+        except Exception as e:
+            if logger:
+                logger.log_error("Ошибка при сохранении данных при закрытии", e)
+        
+        try:
+            if hasattr(self, 'network_manager'):
+                self.network_manager.stop()
+        except Exception as e:
+            if logger:
+                logger.log_error("Ошибка при остановке network_manager", e)
 
-        if hasattr(self, 'schedule_sync_service'):
-            self.schedule_sync_service.stop()
+        try:
+            if hasattr(self, 'schedule_sync_service'):
+                self.schedule_sync_service.stop()
+        except Exception as e:
+            if logger:
+                logger.log_error("Ошибка при остановке schedule_sync_service", e)
         
         event.accept()
+    
+    def _send_log_to_coordinator(self, log_entry):
+        """Отправляет лог на coordinator через schedule_sync_service"""
+        if self.schedule_sync_service and self.schedule_sync_service.running:
+            try:
+                self.schedule_sync_service.send_log(log_entry)
+            except Exception as e:
+                # Не логируем ошибки отправки логов, чтобы избежать рекурсии
+                print(f"Ошибка отправки лога на coordinator: {e}")
+    
+    def _on_log_received(self, log_data):
+        """Обработчик получения лога от другого устройства (только для coordinator)"""
+        logger = get_logger()
+        if not logger:
+            return
+        
+        try:
+            # Записываем лог в файл coordinator для всех устройств
+            if logger.coordinator_log_file:
+                log_line = json.dumps(log_data, ensure_ascii=False) + "\n"
+                with open(logger.coordinator_log_file, 'a', encoding='utf-8') as f:
+                    f.write(log_line)
+                    f.flush()  # Принудительная запись в реальном времени
+            
+            # Также записываем в отдельный файл для конкретного устройства
+            device_name = log_data.get("device", "unknown")
+            device_id = log_data.get("device_id", "unknown")
+            device_log_file = logger.log_dir / f"{device_name}_{device_id}.log"
+            if device_log_file:
+                log_line = json.dumps(log_data, ensure_ascii=False) + "\n"
+                with open(device_log_file, 'a', encoding='utf-8') as f:
+                    f.write(log_line)
+                    f.flush()  # Принудительная запись в реальном времени
+        except Exception as e:
+            print(f"Ошибка записи лога от устройства: {e}")
 
     def _push_schedule_to_sync(self):
         """Рассылает текущее расписание через модуль синхронизации (если мы координатор)."""
