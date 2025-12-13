@@ -499,10 +499,20 @@ class ScheduleWindow(QWidget):
         # Выделяем прошедшие бои фоновым цветом
         completed_color = QBrush(QColor(200, 220, 240))  # Более яркий голубой для завершенных матчей
         
+        completed_matches_count = 0
         for match in schedule:
-            mat = match['mat']
-            col = mats.index(mat) + 1
-            row = match['round'] - 1
+            mat = match.get('mat')
+            if not mat:
+                continue
+                
+            try:
+                col = mats.index(mat) + 1
+            except ValueError:
+                continue
+                
+            row = match.get('round', 1) - 1
+            if row < 0:
+                continue
             
             # Проверяем, завершен ли этот конкретный матч (несколько способов проверки)
             status = match.get('status', '')
@@ -516,6 +526,7 @@ class ScheduleWindow(QWidget):
             )
             
             if is_completed:
+                completed_matches_count += 1
                 # Выделяем ячейку с завершенным матчем
                 item = table.item(row, col)
                 if item:
@@ -530,6 +541,9 @@ class ScheduleWindow(QWidget):
                 num_item = table.item(row, 0)
                 if num_item:
                     num_item.setBackground(completed_color)
+        
+        if completed_matches_count > 0:
+            print(f"[UPDATE] Выделено {completed_matches_count} завершенных матчей в таблице")
 
         return table
 
@@ -826,8 +840,21 @@ class ScheduleWindow(QWidget):
     
     def _do_update_data(self):
         """Внутренний метод для обновления данных (выполняется в главном потоке)"""
+        print(f"[UPDATE] _do_update_data вызван, tournament_data есть: {self.tournament_data is not None}")
         if not hasattr(self, 'schedule_table'):
             # Если таблицы еще нет, создаем ее
+            try:
+                self.schedule_table = self.create_schedule_table()
+                if self.schedule_table:
+                    layout = self.layout()
+                    layout.insertWidget(2, self.schedule_table)
+                    print(f"[UPDATE] Таблица расписания создана впервые")
+            except Exception as e:
+                print(f"[ERROR] Ошибка создания таблицы расписания: {e}")
+            return
+        
+        if not self.schedule_table:
+            print(f"[UPDATE] Таблица расписания отсутствует, создаем новую")
             try:
                 self.schedule_table = self.create_schedule_table()
                 if self.schedule_table:
@@ -837,8 +864,7 @@ class ScheduleWindow(QWidget):
                 print(f"[ERROR] Ошибка создания таблицы расписания: {e}")
             return
         
-        if not self.schedule_table:
-            return
+        print(f"[UPDATE] Пересоздаем таблицу расписания для отображения обновлений")
         
         try:
             # Удаляем старую таблицу безопасно
@@ -888,11 +914,13 @@ class ScheduleWindow(QWidget):
     def _create_new_table(self):
         """Создает новую таблицу после удаления старой"""
         try:
+            print(f"[UPDATE] Создание новой таблицы расписания")
             # Создаем новую таблицу с правильным родителем
             self.schedule_table = self.create_schedule_table()
             if self.schedule_table:
                 layout = self.layout()
                 layout.insertWidget(2, self.schedule_table)
+                print(f"[UPDATE] Новая таблица расписания создана и добавлена в layout")
         except Exception as e:
             print(f"[ERROR] Ошибка создания новой таблицы расписания: {e}")
             import traceback

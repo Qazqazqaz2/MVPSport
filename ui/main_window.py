@@ -340,8 +340,11 @@ class EnhancedControlPanel(QMainWindow):
         # Обновляем матч в категориях
         updated_categories = self._update_category_match_from_data(match_id, match_data)
         
-        # Обновляем UI
+        # Обновляем UI - принудительно обновляем все вкладки расписания
+        print(f"[SYNC] Запуск обновления UI для матча {match_id}")
         QTimer.singleShot(0, self.update_schedule_tab)
+        # Дополнительное обновление через небольшую задержку для гарантии
+        QTimer.singleShot(100, self.update_schedule_tab)
         
         # Обновляем открытые сетки для обновленных категорий
         if updated_categories:
@@ -704,14 +707,33 @@ class EnhancedControlPanel(QMainWindow):
             return
         
         try:
+            # Обновляем вкладки расписания в главном окне
+            from ui.widgets.schedule import ScheduleWindow, MatScheduleWindow
+            for i in range(self.tab_widget.count()):
+                try:
+                    widget = self.tab_widget.widget(i)
+                    if isinstance(widget, ScheduleWindow):
+                        widget.update_data(self.tournament_data)
+                        print(f"[UPDATE] Обновлена вкладка расписания (ScheduleWindow)")
+                    elif isinstance(widget, MatScheduleWindow):
+                        widget.update_data(self.tournament_data)
+                        print(f"[UPDATE] Обновлена вкладка расписания на ковре (MatScheduleWindow)")
+                except (RuntimeError, AttributeError) as e:
+                    # Виджет может быть удален или находиться в другом потоке
+                    pass
+                except Exception as e:
+                    print(f"[ERROR] Ошибка обновления вкладки расписания: {e}")
+            
             # Обновляем отдельное окно расписания, если оно открыто
             # Используем список, чтобы избежать проблем при изменении списка виджетов
             try:
+                from ui.widgets.schedule import ScheduleMainWindow
                 top_level_widgets = list(QApplication.topLevelWidgets())
                 for window in top_level_widgets:
                     try:
                         if isinstance(window, ScheduleMainWindow) and window.isVisible():
                             window.update_data(self.tournament_data)
+                            print(f"[UPDATE] Обновлено отдельное окно расписания")
                     except (RuntimeError, AttributeError) as e:
                         # Виджет может быть удален или находиться в другом потоке
                         pass
@@ -721,15 +743,21 @@ class EnhancedControlPanel(QMainWindow):
                 # QApplication может быть недоступен
                 pass
             
-            # Обновляем вкладки расписания на ковре
+            # Обновляем все вкладки расписания в главном окне
             if hasattr(self, 'tab_widget') and self.tab_widget:
                 try:
+                    from ui.widgets.schedule import ScheduleWindow, MatScheduleWindow
                     tab_count = self.tab_widget.count()
                     for i in range(tab_count):
                         try:
                             widget = self.tab_widget.widget(i)
-                            if widget and isinstance(widget, MatScheduleWindow):
-                                widget.update_data(self.tournament_data)
+                            if widget:
+                                if isinstance(widget, ScheduleWindow):
+                                    widget.update_data(self.tournament_data)
+                                    print(f"[UPDATE] Обновлена вкладка расписания (ScheduleWindow)")
+                                elif isinstance(widget, MatScheduleWindow):
+                                    widget.update_data(self.tournament_data)
+                                    print(f"[UPDATE] Обновлена вкладка расписания на ковре (MatScheduleWindow)")
                         except (RuntimeError, AttributeError):
                             # Виджет может быть удален или находиться в другом потоке
                             pass
