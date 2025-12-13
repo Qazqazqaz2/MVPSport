@@ -71,11 +71,13 @@ class ScheduleSyncService:
         on_peer_update: Optional[Callable[[Dict[str, Dict[str, Any]]], None]] = None,
         on_log: Optional[Callable[[str], None]] = None,
         on_log_received: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_match_update: Optional[Callable[[Dict[str, Any], str], None]] = None,
     ):
         self.on_schedule_received = on_schedule_received
         self.on_peer_update = on_peer_update
         self.on_log = on_log
         self.on_log_received = on_log_received
+        self.on_match_update = on_match_update
 
         self.role = "node"
         self.device_name = socket.gethostname()
@@ -213,6 +215,23 @@ class ScheduleSyncService:
             "schedule_hash": self.schedule_hash,
         }
         self._send(payload, target=self.coordinator_host)
+    
+    def send_match_update(self, match_data: Dict[str, Any]):
+        """Отправка обновления одного матча в реальном времени всем узлам."""
+        if not match_data:
+            return
+        
+        payload = {
+            "type": "match_update",
+            "match": match_data,
+            "mat": self.mat_number,
+            "role": self.role,
+            "device": self.device_name,
+            "device_id": self.device_id,
+            "ts": time.time(),
+        }
+        self._send(payload)
+        self._log(f"[sync] отправлено обновление матча {match_data.get('match_id', 'unknown')}")
 
     def update_mat_number(self, mat_number: int):
         self.mat_number = mat_number or 1
@@ -404,6 +423,16 @@ class ScheduleSyncService:
         elif msg_type == "mat_status":
             # Координатор обновляет статус ковра
             pass  # статус уже записан в peers
+        elif msg_type == "match_update":
+            # Обновление одного матча в реальном времени
+            match_data = message.get("match")
+            if match_data and self.on_match_update:
+                self.on_match_update(match_data, sender_ip)
+            # Ретрансляция обновления матча для покрытия сети (только для node/relay, НЕ для coordinator)
+            if self.allow_relay and self.role != "coordinator":
+                relay_message = message.copy()
+                relay_message["mat"] = self.mat_number
+                self._send(relay_message)
         elif msg_type == "heartbeat":
             # Дополнительно ничего не делаем, peers уже обновили
             pass

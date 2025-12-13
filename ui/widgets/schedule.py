@@ -1218,8 +1218,8 @@ class MatScheduleWindow(QWidget):
 
         match['status'] = 'В процессе'
         match['started_at'] = datetime.now().strftime("%H:%M")
-        # Синхронизируем изменения
-        self._sync_schedule_changes()
+        # Синхронизируем изменения в реальном времени
+        self._sync_match_update(match)
 
         match_data = {
             'wrestler1': {
@@ -1264,20 +1264,22 @@ class MatScheduleWindow(QWidget):
         if m:
             m['status'] = 'Завершен'
             m['completed_at'] = datetime.now().strftime("%H:%M")
+            m['completed'] = True
             self.update_mat_schedule()
-            # Синхронизируем изменения
-            self._sync_schedule_changes()
+            # Синхронизируем изменения в реальном времени
+            self._sync_match_update(m)
 
     def reset_match(self, row):
         item = self.schedule_table.item(row, 1) if self.schedule_table else None
         m = item.data(Qt.UserRole) if item else None
         if m:
             m['status'] = 'Ожидание'
-            for k in ('started_at', 'completed_at'):
+            m['completed'] = False
+            for k in ('started_at', 'completed_at', 'winner', 'score1', 'score2'):
                 m.pop(k, None)
             self.update_mat_schedule()
-            # Синхронизируем изменения
-            self._sync_schedule_changes()
+            # Синхронизируем изменения в реальном времени
+            self._sync_match_update(m)
     
     def _get_schedule_sync(self):
         """Получает schedule_sync из родительского окна."""
@@ -1305,6 +1307,16 @@ class MatScheduleWindow(QWidget):
                 print(f"[SYNC] Изменения в расписании синхронизированы")
             except Exception as e:
                 print(f"[ERROR] Ошибка синхронизации изменений расписания: {e}")
+    
+    def _sync_match_update(self, match_data):
+        """Синхронизирует обновление одного матча в реальном времени."""
+        schedule_sync = self._get_schedule_sync()
+        if schedule_sync and match_data:
+            try:
+                schedule_sync.send_match_update(match_data)
+                print(f"[SYNC] Обновление матча {match_data.get('match_id', 'unknown')} отправлено в реальном времени")
+            except Exception as e:
+                print(f"[ERROR] Ошибка синхронизации обновления матча: {e}")
 
     # --------------------------------------------------------------
     #  Обновление данных

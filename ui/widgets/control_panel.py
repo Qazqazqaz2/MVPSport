@@ -1864,24 +1864,54 @@ class ControlPanel(QWidget):
             target_match['winner_points'] = 0
             target_match['loser_points'] = 0
 
-        # Обновляем расписание
+        # Обновляем расписание с полной информацией о результатах
         if 'schedule' in self.tournament_data:
             for s_match in self.tournament_data['schedule']:
                 if s_match.get('match_id') == target_match.get('id'):
                     s_match['winner'] = target_match.get('winner')
                     s_match['status'] = 'Завершен'
                     s_match['completed_at'] = datetime.now().strftime("%H:%M")
+                    # Добавляем полную информацию о результатах для синхронизации
+                    s_match['score1'] = target_match.get('score1', 0)
+                    s_match['score2'] = target_match.get('score2', 0)
+                    s_match['completed'] = True
                     break
 
         # Синхронизируем статус ковра
         if self.schedule_sync:
             self.schedule_sync.send_mat_status("completed", target_match.get('id'))
-            # Также отправляем обновленное расписание с результатами матча
+            # Отправляем обновление матча в реальном времени
             try:
-                self.schedule_sync.push_schedule(self.tournament_data)
-                print(f"[SYNC] Расписание с результатами матча синхронизировано")
+                # Находим матч в расписании для отправки
+                match_update = None
+                if 'schedule' in self.tournament_data:
+                    for s_match in self.tournament_data['schedule']:
+                        if s_match.get('match_id') == target_match.get('id'):
+                            match_update = s_match.copy()
+                            break
+                
+                # Если не нашли в расписании, создаем обновление из данных матча
+                if not match_update:
+                    match_update = {
+                        'match_id': target_match.get('id'),
+                        'category': self.current_match_category,
+                        'wrestler1': target_match.get('wrestler1'),
+                        'wrestler2': target_match.get('wrestler2'),
+                        'winner': target_match.get('winner'),
+                        'score1': target_match.get('score1', 0),
+                        'score2': target_match.get('score2', 0),
+                        'completed': target_match.get('completed', False),
+                        'status': 'Завершен',
+                        'completed_at': datetime.now().strftime("%H:%M"),
+                    }
+                
+                # Отправляем обновление матча в реальном времени
+                self.schedule_sync.send_match_update(match_update)
+                print(f"[SYNC] Обновление матча {target_match.get('id')} отправлено в реальном времени")
             except Exception as e:
-                print(f"[ERROR] Ошибка синхронизации расписания после завершения матча: {e}")
+                print(f"[ERROR] Ошибка синхронизации обновления матча: {e}")
+                import traceback
+                traceback.print_exc()
         self.refresh_inline_schedule()
 
         # Сохраняем результат матча в БД (безопасно, с перехватом ошибок)

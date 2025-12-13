@@ -19,6 +19,7 @@ from core.logger import get_logger
 class EnhancedControlPanel(QMainWindow):
     # Сигналы для безопасного обновления UI из потоков
     schedule_update_signal = pyqtSignal(list, str)  # schedule, sender_ip
+    match_update_signal = pyqtSignal(dict, str)  # match_data, sender_ip
     def __init__(self, is_secondary=False, server_host=None):
         super().__init__()
         self.tournament_data = None
@@ -30,8 +31,9 @@ class EnhancedControlPanel(QMainWindow):
         self.network_manager = NetworkManager()
         self.network_manager.register_handler('tournament_update', self.handle_tournament_update)
         self.settings = get_settings()
-        # Подключаем сигнал для безопасного обновления UI из потока
+        # Подключаем сигналы для безопасного обновления UI из потока
         self.schedule_update_signal.connect(self._on_schedule_from_sync_safe)
+        self.match_update_signal.connect(self._on_match_update_safe)
         
         # Инициализируем логирование
         logger = get_logger()
@@ -49,7 +51,8 @@ class EnhancedControlPanel(QMainWindow):
         self.schedule_sync_service = ScheduleSyncService(
             on_schedule_received=self._on_schedule_from_sync_thread_safe,
             on_log=lambda msg: print(msg),
-            on_log_received=None  # Установим позже
+            on_log_received=None,  # Установим позже
+            on_match_update=self._on_match_update_thread_safe
         )
         
         # Устанавливаем обработчик получения логов только для coordinator
@@ -182,6 +185,10 @@ class EnhancedControlPanel(QMainWindow):
         """Безопасный вызов из потока - эмитирует сигнал."""
         self.schedule_update_signal.emit(schedule, sender_ip or "")
     
+    def _on_match_update_thread_safe(self, match_data, sender_ip=None):
+        """Безопасный вызов из потока - эмитирует сигнал."""
+        self.match_update_signal.emit(match_data, sender_ip or "")
+    
     def _on_schedule_from_sync_safe(self, schedule, sender_ip=None):
         """Применение расписания, полученного через модуль синхронизации (вызывается из главного потока)."""
         if not schedule:
@@ -210,6 +217,9 @@ class EnhancedControlPanel(QMainWindow):
             schedule
         )
         
+        # Обновляем результаты матчей в категориях на основе обновленного расписания
+        updated_categories = self._update_category_matches_from_schedule(schedule)
+        
         # Отладочная информация о результате слияния
         merged_schedule = self.tournament_data['schedule']
         mats_in_merged = {}
@@ -220,11 +230,137 @@ class EnhancedControlPanel(QMainWindow):
         
         # Используем QTimer.singleShot для гарантии выполнения в главном потоке
         QTimer.singleShot(0, self.update_schedule_tab)
+        
+        # Обновляем открытые сетки для обновленных категорий
+        if updated_categories:
+            QTimer.singleShot(0, lambda: self._update_brackets_for_categories(updated_categories))
+        
         print(f"[sync] Расписание обновлено из {sender_ip} ({len(schedule)} записей, всего: {len(merged_schedule)})")
+    
+    def _update_brackets_for_categories(self, categories):
+        """Обновляет открытые сетки для указанных категорий."""
+        from ui.widgets.tournament_manager import BracketWindow
+        for widget in QApplication.allWidgets():
+            if isinstance(widget, BracketWindow):
+                if hasattr(widget, 'current_category') and widget.current_category in categories:
+                    widget.update_bracket(widget.current_category)
+    
+    def _update_category_matches_from_schedule(self, schedule):
+        """Обновляет результаты матчей в категориях на основе данных из расписания."""
+        if not self.tournament_data or not schedule:
+            return set()
+        
+        categories = self.tournament_data.get('categories', {})
+        updated_count = 0
+        updated_categories = set()
+        
+        for s_match in schedule:
+            match_id = s_match.get('match_id')
+            if not match_id:
+                continue
+            
+            # Ищем матч в категориях по match_id
+            for cat_name, cat_data in categories.items():
+                matches = cat_data.get('matches', [])
+                for match in matches:
+                    if match.get('id') == match_id:
+                        # Обновляем результаты матча из расписания
+                        updated = False
+                        if 'winner' in s_match and match.get('winner') != s_match['winner']:
+                            match['winner'] = s_match['winner']
+                            updated = True
+                        if 'score1' in s_match and match.get('score1') != s_match['score1']:
+                            match['score1'] = s_match['score1']
+                            updated = True
+                        if 'score2' in s_match and match.get('score2') != s_match['score2']:
+                            match['score2'] = s_match['score2']
+                            updated = True
+                        if 'completed' in s_match:
+                            if match.get('completed') != s_match['completed']:
+                                match['completed'] = s_match['completed']
+                                updated = True
+                        elif s_match.get('status') == 'Завершен':
+                            if not match.get('completed'):
+                                match['completed'] = True
+                                updated = True
+                        
+                        if updated:
+                            updated_count += 1
+                            updated_categories.add(cat_name)
+                        break
+        
+        if updated_count > 0:
+            print(f"[SYNC] Обновлено {updated_count} матчей в категориях на основе расписания: {updated_categories}")
+        
+        return updated_categories
+    
+    def _on_match_update_safe(self, match_data, sender_ip=None):
+        """Обработка обновления одного матча в реальном времени (вызывается из главного потока)."""
+        if not match_data or not self.tournament_data:
+            return
+        
+        match_id = match_data.get('match_id')
+        if not match_id:
+            return
+        
+        print(f"[SYNC] Получено обновление матча {match_id} от {sender_ip}")
+        
+        # Обновляем матч в расписании
+        schedule = self.tournament_data.get('schedule', [])
+        updated_in_schedule = False
+        for s_match in schedule:
+            if s_match.get('match_id') == match_id:
+                # Обновляем все поля из входящего матча
+                s_match.update(match_data)
+                updated_in_schedule = True
+                break
+        
+        # Если матча нет в расписании, добавляем его
+        if not updated_in_schedule:
+            schedule.append(match_data)
+            self.tournament_data['schedule'] = schedule
+        
+        # Обновляем матч в категориях
+        updated_categories = self._update_category_match_from_data(match_id, match_data)
+        
+        # Обновляем UI
+        QTimer.singleShot(0, self.update_schedule_tab)
+        
+        # Обновляем открытые сетки для обновленных категорий
+        if updated_categories:
+            QTimer.singleShot(0, lambda: self._update_brackets_for_categories(updated_categories))
+        
+        print(f"[SYNC] Матч {match_id} обновлен в реальном времени")
+    
+    def _update_category_match_from_data(self, match_id, match_data):
+        """Обновляет один матч в категориях на основе данных."""
+        if not self.tournament_data:
+            return set()
+        
+        categories = self.tournament_data.get('categories', {})
+        updated_categories = set()
+        
+        # Ищем матч в категориях по match_id
+        for cat_name, cat_data in categories.items():
+            matches = cat_data.get('matches', [])
+            for match in matches:
+                if match.get('id') == match_id:
+                    # Обновляем результаты матча
+                    updated = False
+                    for key in ['winner', 'score1', 'score2', 'completed', 'status', 'completed_at']:
+                        if key in match_data and match.get(key) != match_data[key]:
+                            match[key] = match_data[key]
+                            updated = True
+                    
+                    if updated:
+                        updated_categories.add(cat_name)
+                    break
+        
+        return updated_categories
 
     @staticmethod
     def _merge_schedule(existing_schedule, incoming_schedule):
-        """Объединяет расписания, не теряя матчи с других ковров."""
+        """Объединяет расписания, не теряя матчи с других ковров. Приоритет у входящих данных для результатов."""
         if not existing_schedule:
             return list(incoming_schedule or [])
         if not incoming_schedule:
@@ -245,10 +381,21 @@ class EnhancedControlPanel(QMainWindow):
             )
 
         merged = {}
+        # Сначала добавляем существующие матчи
         for m in existing_schedule:
-            merged[make_key(m)] = m
+            merged[make_key(m)] = m.copy()  # Копируем, чтобы не изменять оригинал
+        
+        # Затем обновляем/добавляем входящие матчи (приоритет у входящих данных)
         for m in incoming_schedule:
-            merged[make_key(m)] = m
+            key = make_key(m)
+            if key in merged:
+                # Объединяем данные: входящие данные имеют приоритет, но сохраняем все поля
+                existing = merged[key]
+                # Обновляем все поля из входящего матча
+                existing.update(m)
+            else:
+                # Новый матч
+                merged[key] = m.copy()
 
         result = list(merged.values())
         result.sort(key=lambda x: (
