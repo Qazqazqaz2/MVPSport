@@ -20,18 +20,22 @@ def main():
     app = QApplication(sys.argv)
     
     # Регистрация мета-типов для устранения предупреждений
+    # Делаем это после создания QApplication, но до создания виджетов
     try:
         # Регистрируем QTextCursor для queued-сигналов
-        QtCore.qRegisterMetaType(QTextCursor)
-        # Регистрируем QVector<int> как строку (C++ шаблонный тип)
-        QtCore.qRegisterMetaType("QVector<int>")
-        # Также регистрируем через QMetaType для совместимости
+        # Используем try-except, так как тип может быть уже зарегистрирован
         try:
-            from PyQt5.QtCore import QVariant
-            # Регистрируем типы для использования в сигналах
-            if not QMetaType.type("QVector<int>"):
-                QMetaType.registerType("QVector<int>")
+            QtCore.qRegisterMetaType(QTextCursor)
         except:
+            # Тип уже зарегистрирован или не поддерживается
+            pass
+        
+        # Регистрируем QVector<int> как строку (C++ шаблонный тип)
+        # В PyQt5 QVector<int> регистрируется как строка
+        try:
+            QtCore.qRegisterMetaType("QVector<int>")
+        except:
+            # Тип уже зарегистрирован или не поддерживается
             pass
     except Exception as e:
         # Типы могут быть уже зарегистрированы или не поддерживаться
@@ -58,9 +62,8 @@ def main():
         coordinator_host = settings.get("network", "coordinator_host", "")
     
     # Функция для отправки логов на coordinator (будет установлена после создания main_window)
-    def log_send_handler(log_entry):
-        # Эта функция будет установлена в main_window после создания schedule_sync_service
-        pass
+    # Используем None вместо пустой функции, чтобы можно было проверить установку
+    log_send_handler = None
     
     # Инициализируем логгер
     logger = init_logger(
@@ -75,39 +78,62 @@ def main():
     logger.log_info("Приложение запущено", {"argv": sys.argv, "role": role, "is_secondary": args.secondary})
     
     # Перехватываем QMessageBox для логирования окон завершения
+    # Делаем это только после полной инициализации QApplication
     def patched_question(parent, title, text, buttons=QMessageBox.Yes | QMessageBox.No, defaultButton=QMessageBox.NoButton):
         """Перехватывает QMessageBox.question и логирует окна завершения"""
-        logger = get_logger()
-        
-        # Проверяем, является ли это окном завершения программы
-        is_exit_dialog = any(keyword in text.lower() for keyword in ['закрыть', 'exit', 'quit', 'завершить', 'выйти', 'close'])
-        
-        if logger and is_exit_dialog:
-            logger.log_exit_dialog("question", f"{title}: {text}", result=None)
-        
-        result = _original_question(parent, title, text, buttons, defaultButton)
-        
-        if logger and is_exit_dialog:
-            result_text = "Yes" if result == QMessageBox.Yes else "No" if result == QMessageBox.No else str(result)
-            logger.log_exit_dialog("question", f"{title}: {text}", result=result_text)
-        
-        return result
+        try:
+            logger = get_logger()
+            
+            # Проверяем, является ли это окном завершения программы
+            is_exit_dialog = any(keyword in text.lower() for keyword in ['закрыть', 'exit', 'quit', 'завершить', 'выйти', 'close'])
+            
+            if logger and is_exit_dialog:
+                try:
+                    logger.log_exit_dialog("question", f"{title}: {text}", result=None)
+                except:
+                    pass  # Не прерываем выполнение при ошибке логирования
+            
+            result = _original_question(parent, title, text, buttons, defaultButton)
+            
+            if logger and is_exit_dialog:
+                try:
+                    result_text = "Yes" if result == QMessageBox.Yes else "No" if result == QMessageBox.No else str(result)
+                    logger.log_exit_dialog("question", f"{title}: {text}", result=result_text)
+                except:
+                    pass
+            
+            return result
+        except Exception:
+            # В случае любой ошибки используем оригинальный метод
+            return _original_question(parent, title, text, buttons, defaultButton)
     
     def patched_warning(parent, title, text, buttons=QMessageBox.Ok, defaultButton=QMessageBox.NoButton):
         """Перехватывает QMessageBox.warning"""
-        logger = get_logger()
-        if logger:
-            logger.log_warning(f"{title}: {text}")
-        return _original_warning(parent, title, text, buttons, defaultButton)
+        try:
+            logger = get_logger()
+            if logger:
+                try:
+                    logger.log_warning(f"{title}: {text}")
+                except:
+                    pass
+            return _original_warning(parent, title, text, buttons, defaultButton)
+        except Exception:
+            return _original_warning(parent, title, text, buttons, defaultButton)
     
     def patched_critical(parent, title, text, buttons=QMessageBox.Ok, defaultButton=QMessageBox.NoButton):
         """Перехватывает QMessageBox.critical"""
-        logger = get_logger()
-        if logger:
-            logger.log_error(f"{title}: {text}")
-        return _original_critical(parent, title, text, buttons, defaultButton)
+        try:
+            logger = get_logger()
+            if logger:
+                try:
+                    logger.log_error(f"{title}: {text}")
+                except:
+                    pass
+            return _original_critical(parent, title, text, buttons, defaultButton)
+        except Exception:
+            return _original_critical(parent, title, text, buttons, defaultButton)
     
-    # Применяем патчи
+    # Применяем патчи - QApplication уже создан выше
     QMessageBox.question = staticmethod(patched_question)
     QMessageBox.warning = staticmethod(patched_warning)
     QMessageBox.critical = staticmethod(patched_critical)

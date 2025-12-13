@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QTextEdit,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal, QObject
 
 from core.settings import get_settings
 from network.schedule_sync import ScheduleSyncService
@@ -26,6 +26,10 @@ from network.schedule_sync import ScheduleSyncService
 
 class NetworkSyncTab(QWidget):
     """UI-вкладка для настройки и мониторинга модуля синхронизации расписаний."""
+    
+    # Сигналы для безопасного обновления UI из потока
+    peer_update_signal = pyqtSignal(dict)
+    log_signal = pyqtSignal(str)
 
     def __init__(
         self,
@@ -39,6 +43,9 @@ class NetworkSyncTab(QWidget):
         self.schedule_sync = schedule_sync
         self.on_schedule_apply = on_schedule_apply
         self.settings = get_settings()
+        # Подключаем сигналы для безопасного обновления UI из потока
+        self.peer_update_signal.connect(self._on_peer_update_safe)
+        self.log_signal.connect(self._log_safe)
         self._build_ui()
         self._load_defaults()
         self._connect_service_callbacks()
@@ -122,7 +129,8 @@ class NetworkSyncTab(QWidget):
         # Переназначаем колбеки сервиса
         if self.schedule_sync:
             self.schedule_sync.on_schedule_received = self._on_remote_schedule
-            self.schedule_sync.on_peer_update = self._on_peer_update
+            # Используем промежуточный колбек, который эмитирует сигнал для безопасного обновления UI
+            self.schedule_sync.on_peer_update = self._on_peer_update_thread_safe
             self.schedule_sync.on_log = self._log
 
     # ------------------------------------------------------------------ #
@@ -188,7 +196,12 @@ class NetworkSyncTab(QWidget):
             self.on_schedule_apply(schedule)
         self._log(f"Принято расписание от {sender_ip} ({len(schedule)} записей)")
 
-    def _on_peer_update(self, peers: Dict[str, Dict[str, Any]]):
+    def _on_peer_update_thread_safe(self, peers: Dict[str, Dict[str, Any]]):
+        """Безопасный вызов из потока - эмитирует сигнал."""
+        self.peer_update_signal.emit(peers)
+    
+    def _on_peer_update_safe(self, peers: Dict[str, Dict[str, Any]]):
+        """Обновление таблицы peers (вызывается из главного потока через сигнал)."""
         self.peers_table.setRowCount(0)
         for info in peers.values():
             row = self.peers_table.rowCount()
@@ -205,6 +218,11 @@ class NetworkSyncTab(QWidget):
                 self.peers_table.setItem(row, col, QTableWidgetItem(str(value)))
 
     def _log(self, text: str):
+        """Безопасный вызов из потока - эмитирует сигнал."""
+        self.log_signal.emit(text)
+    
+    def _log_safe(self, text: str):
+        """Запись в лог (вызывается из главного потока через сигнал)."""
         now = datetime.now().strftime("%H:%M:%S")
         self.log_text.append(f"[{now}] {text}")
 

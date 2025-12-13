@@ -823,9 +823,14 @@ class ScheduleWindow(QWidget):
             if old_table.parent() == self:
                 layout.removeWidget(old_table)
             
-            # Затем очищаем родителя и удаляем
-            old_table.setParent(None)
-            old_table.deleteLater()
+            # Затем очищаем родителя и удаляем безопасно
+            # Проверяем, что мы в главном потоке перед операциями с виджетами
+            try:
+                old_table.setParent(None)
+                old_table.deleteLater()
+            except RuntimeError:
+                # Если виджет уже удален или находится в другом потоке, просто пропускаем
+                pass
             
             # Небольшая задержка перед созданием нового виджета для завершения удаления
             QTimer.singleShot(10, self._create_new_table)
@@ -1080,17 +1085,25 @@ class MatScheduleWindow(QWidget):
             old_table = self.schedule_table
             
             if old_table:
-                if old_table.parent() == self:
-                    layout.removeWidget(old_table)
-                old_table.setParent(None)
-                old_table.deleteLater()
+                try:
+                    if old_table.parent() == self:
+                        layout.removeWidget(old_table)
+                    old_table.setParent(None)
+                    old_table.deleteLater()
+                except RuntimeError:
+                    # Если виджет уже удален или находится в другом потоке, просто пропускаем
+                    pass
             
             self.schedule_table = new_table
             
             if self._table_placeholder:
-                layout.replaceWidget(self._table_placeholder, self.schedule_table)
-                self._table_placeholder.setParent(None)
-                self._table_placeholder = None
+                try:
+                    layout.replaceWidget(self._table_placeholder, self.schedule_table)
+                    self._table_placeholder.setParent(None)
+                    self._table_placeholder = None
+                except RuntimeError:
+                    # Если виджет уже удален или находится в другом потоке, просто пропускаем
+                    self._table_placeholder = None
             else:
                 layout.insertWidget(3, self.schedule_table)
         except Exception as e:

@@ -174,6 +174,10 @@ class DeviceLogger:
     
     def _write_log(self, log_entry: Dict[str, Any], level: str = "INFO"):
         """Записывает лог-запись в файл и отправляет на coordinator"""
+        # Защита от рекурсии - не логируем ошибки логирования
+        if "_logging_in_progress" in log_entry:
+            return
+        
         with _log_lock:
             try:
                 # Добавляем уровень
@@ -188,7 +192,11 @@ class DeviceLogger:
                         f.write(log_line)
                         f.flush()  # Принудительная запись в реальном времени
                 except Exception as e:
-                    print(f"Ошибка записи в локальный лог: {e}")
+                    # Не логируем ошибки записи, чтобы избежать рекурсии
+                    try:
+                        print(f"Ошибка записи в локальный лог: {e}")
+                    except:
+                        pass
                 
                 # Если мы coordinator, записываем в общий файл
                 if self.role == "coordinator" and self.coordinator_log_file:
@@ -197,18 +205,38 @@ class DeviceLogger:
                             f.write(log_line)
                             f.flush()
                     except Exception as e:
-                        print(f"Ошибка записи в coordinator лог: {e}")
+                        try:
+                            print(f"Ошибка записи в coordinator лог: {e}")
+                        except:
+                            pass
                 
                 # Отправляем на coordinator через сеть (если мы не coordinator)
-                if self.role != "coordinator" and self.on_log_send:
+                # Проверяем, что on_log_send установлен и не вызывает рекурсию
+                if self.role != "coordinator" and self.on_log_send is not None:
                     try:
-                        self.on_log_send(log_entry)
+                        # Проверяем, что это не вызов из самого on_log_send
+                        if not hasattr(self, '_sending_log'):
+                            self._sending_log = True
+                            try:
+                                self.on_log_send(log_entry)
+                            except (AttributeError, RuntimeError) as e:
+                                # Если функция еще не установлена правильно или объект удален
+                                pass
+                            finally:
+                                self._sending_log = False
                     except Exception as e:
-                        print(f"Ошибка отправки лога на coordinator: {e}")
+                        # Не логируем ошибки отправки, чтобы избежать рекурсии
+                        try:
+                            print(f"Ошибка отправки лога на coordinator: {e}")
+                        except:
+                            pass
                 
             except Exception as e:
-                # Критическая ошибка - выводим в консоль
-                print(f"КРИТИЧЕСКАЯ ОШИБКА ЛОГИРОВАНИЯ: {e}")
+                # Критическая ошибка - выводим в консоль, но не логируем
+                try:
+                    print(f"КРИТИЧЕСКАЯ ОШИБКА ЛОГИРОВАНИЯ: {e}")
+                except:
+                    pass
     
     def log_error(self, message: str, exception: Optional[Exception] = None, context: Optional[Dict[str, Any]] = None):
         """Логирует ошибку"""

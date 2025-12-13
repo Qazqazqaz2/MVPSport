@@ -144,13 +144,18 @@ class ScheduleSyncService:
             else:
                 raise
 
-        self._receiver_thread = threading.Thread(target=self._receiver_loop, daemon=True)
-        self._receiver_thread.start()
+        try:
+            self._receiver_thread = threading.Thread(target=self._receiver_loop, daemon=True)
+            self._receiver_thread.start()
 
-        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
-        self._heartbeat_thread.start()
+            self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+            self._heartbeat_thread.start()
 
-        self._log(f"[sync] старт модуля ({self.role}), порт {SCHEDULE_SYNC_PORT}")
+            self._log(f"[sync] старт модуля ({self.role}), порт {SCHEDULE_SYNC_PORT}")
+        except Exception as e:
+            self.running = False
+            self._log(f"[sync] Ошибка при запуске потоков: {e}")
+            raise
 
     def stop(self):
         """Остановка сервиса."""
@@ -345,7 +350,8 @@ class ScheduleSyncService:
                     self.on_schedule_received(
                         _deduplicate_schedule(message.get("schedule")), sender_ip
                     )
-                # Ретрансляция при необходимости
+                # Ретрансляция при необходимости (только для node/relay, НЕ для coordinator)
+                # Coordinator принимает расписание, но не отправляет его обратно, чтобы избежать циклов
                 if self.allow_relay and self.role != "coordinator":
                     self._send(message)
         elif msg_type == "schedule_chunk":
@@ -384,6 +390,8 @@ class ScheduleSyncService:
                     self.schedule_hash = entry["hash"]
                     if self.on_schedule_received:
                         self.on_schedule_received(_deduplicate_schedule(combined), sender_ip)
+                    # Ретрансляция при необходимости (только для node/relay, НЕ для coordinator)
+                    # Coordinator принимает расписание, но не отправляет его обратно, чтобы избежать циклов
                     if self.allow_relay and self.role != "coordinator":
                         # Рассылаем дальше уже собранное расписание, соблюдая лимит
                         self._send_schedule_chunks(_deduplicate_schedule(combined))

@@ -44,18 +44,25 @@ class EnhancedControlPanel(QMainWindow):
             logger.role = net_role
             logger.coordinator_host = coordinator_host if coordinator_host else None
         
-        # Создаем schedule_sync_service с обработчиком логов
+        # Создаем schedule_sync_service БЕЗ обработчика логов сначала
+        # Обработчик будет установлен после полной инициализации
         self.schedule_sync_service = ScheduleSyncService(
             on_schedule_received=self._on_schedule_from_sync_thread_safe,
             on_log=lambda msg: print(msg),
-            on_log_received=self._on_log_received if logger and logger.role == "coordinator" else None
+            on_log_received=None  # Установим позже
         )
         
-        # Устанавливаем функцию отправки логов в логгер
-        if logger:
-            logger.on_log_send = self._send_log_to_coordinator
+        # Устанавливаем обработчик получения логов только для coordinator
+        # Обработчик отправки логов установим ПОСЛЕ запуска schedule_sync_service
+        if logger and logger.role == "coordinator":
+            self.schedule_sync_service.on_log_received = self._on_log_received
         
         self._auto_start_schedule_sync()
+        
+        # Устанавливаем функцию отправки логов ПОСЛЕ запуска schedule_sync_service
+        # Это важно для node устройств, чтобы избежать ошибок сегментации
+        if logger and logger.role != "coordinator":
+            logger.on_log_send = self._send_log_to_coordinator
         
         # Настройка сетевого взаимодействия
         if is_secondary:
@@ -82,13 +89,23 @@ class EnhancedControlPanel(QMainWindow):
         auto_start = self.settings.get("network", "auto_start", True)
 
         if auto_start:
-            self.schedule_sync_service.start(
-                role=net_role,
-                mat_number=mat_number,
-                allow_relay=allow_relay,
-                coordinator_host=coordinator_host,
-                device_name=device_name,
-            )
+            try:
+                self.schedule_sync_service.start(
+                    role=net_role,
+                    mat_number=mat_number,
+                    allow_relay=allow_relay,
+                    coordinator_host=coordinator_host,
+                    device_name=device_name,
+                )
+                # После успешного запуска обновляем логгер и устанавливаем обработчик отправки логов
+                logger = get_logger()
+                if logger and logger.role != "coordinator":
+                    logger.on_log_send = self._send_log_to_coordinator
+            except Exception as e:
+                # Логируем ошибку, но не используем logger, чтобы избежать рекурсии
+                print(f"Ошибка при запуске schedule_sync_service: {e}")
+                import traceback
+                traceback.print_exc()
 
     def setup_ui(self):
         title = "Второстепенный ПК - Управление схваткой" if self.is_secondary else "Основной ПК - Управление турниром"
@@ -157,8 +174,9 @@ class EnhancedControlPanel(QMainWindow):
             if isinstance(widget, ControlPanel) and hasattr(widget, 'refresh_inline_schedule'):
                 widget.refresh_inline_schedule()
 
-        # Рассылаем расписание через модуль синхронизации (если мы координатор)
-        self._push_schedule_to_sync()
+        # НЕ рассылаем расписание обратно, если оно пришло из сети
+        # Это предотвращает бесконечный цикл синхронизации
+        # Coordinator должен отправлять расписание только когда он сам его создал/изменил
 
     def _on_schedule_from_sync_thread_safe(self, schedule, sender_ip=None):
         """Безопасный вызов из потока - эмитирует сигнал."""
@@ -517,22 +535,39 @@ class EnhancedControlPanel(QMainWindow):
         
         try:
             # Обновляем отдельное окно расписания, если оно открыто
-            for window in QApplication.topLevelWidgets():
-                if isinstance(window, ScheduleMainWindow) and window.isVisible():
+            # Используем список, чтобы избежать проблем при изменении списка виджетов
+            try:
+                top_level_widgets = list(QApplication.topLevelWidgets())
+                for window in top_level_widgets:
                     try:
-                        window.update_data(self.tournament_data)
+                        if isinstance(window, ScheduleMainWindow) and window.isVisible():
+                            window.update_data(self.tournament_data)
+                    except (RuntimeError, AttributeError) as e:
+                        # Виджет может быть удален или находиться в другом потоке
+                        pass
                     except Exception as e:
                         print(f"[ERROR] Ошибка обновления окна расписания: {e}")
+            except RuntimeError:
+                # QApplication может быть недоступен
+                pass
             
             # Обновляем вкладки расписания на ковре
             if hasattr(self, 'tab_widget') and self.tab_widget:
-                for i in range(self.tab_widget.count()):
-                    widget = self.tab_widget.widget(i)
-                    if isinstance(widget, MatScheduleWindow):
+                try:
+                    tab_count = self.tab_widget.count()
+                    for i in range(tab_count):
                         try:
-                            widget.update_data(self.tournament_data)
+                            widget = self.tab_widget.widget(i)
+                            if widget and isinstance(widget, MatScheduleWindow):
+                                widget.update_data(self.tournament_data)
+                        except (RuntimeError, AttributeError):
+                            # Виджет может быть удален или находиться в другом потоке
+                            pass
                         except Exception as e:
                             print(f"[ERROR] Ошибка обновления вкладки расписания: {e}")
+                except RuntimeError:
+                    # tab_widget может быть недоступен
+                    pass
         except Exception as e:
             print(f"[ERROR] Критическая ошибка при обновлении расписания: {e}")
 
@@ -567,12 +602,32 @@ class EnhancedControlPanel(QMainWindow):
     
     def _send_log_to_coordinator(self, log_entry):
         """Отправляет лог на coordinator через schedule_sync_service"""
-        if self.schedule_sync_service and self.schedule_sync_service.running:
+        # Проверяем, что сервис инициализирован и запущен
+        if not hasattr(self, 'schedule_sync_service'):
+            return
+        if not self.schedule_sync_service:
+            return
+        if not hasattr(self.schedule_sync_service, 'running'):
+            return
+        if not self.schedule_sync_service.running:
+            return
+        if not hasattr(self.schedule_sync_service, 'send_log'):
+            return
+        
+        try:
+            # Дополнительная проверка - убеждаемся, что сокет создан
+            if not hasattr(self.schedule_sync_service, '_sock') or not self.schedule_sync_service._sock:
+                return
+            self.schedule_sync_service.send_log(log_entry)
+        except AttributeError:
+            # Сервис еще не полностью инициализирован
+            pass
+        except Exception as e:
+            # Не логируем ошибки отправки логов, чтобы избежать рекурсии
             try:
-                self.schedule_sync_service.send_log(log_entry)
-            except Exception as e:
-                # Не логируем ошибки отправки логов, чтобы избежать рекурсии
                 print(f"Ошибка отправки лога на coordinator: {e}")
+            except:
+                pass
     
     def _on_log_received(self, log_data):
         """Обработчик получения лога от другого устройства (только для coordinator)"""
