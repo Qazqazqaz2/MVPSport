@@ -300,7 +300,8 @@ class EnhancedControlPanel(QMainWindow):
         if self.is_secondary:
             QMessageBox.warning(self, "Доступ запрещён", "Редактирование доступно только главному секретарю")
             return
-        if not self.tournament_data:
+        # Проверяем tournament_data более тщательно - может быть пустым словарем после импорта
+        if not self.tournament_data or not isinstance(self.tournament_data, dict) or not self.tournament_data.get('categories'):
             QMessageBox.warning(self, "Внимание", "Сначала загрузите турнир через импорт")
             return
         # Проверяем, не открыто ли уже

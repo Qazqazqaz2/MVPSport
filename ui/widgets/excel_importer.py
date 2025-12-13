@@ -550,7 +550,10 @@ class ExcelImporter(QWidget):
         # ГЕНЕРАЦИЯ РАСПИСАНИЯ
         try:
             settings = get_settings()
+            # Перезагружаем настройки перед генерацией
+            settings.load_settings()
             n_mats = settings.get("tournament", "number_of_mats", 2)
+            print(f"[DEBUG excel_importer] Прочитано n_mats={n_mats} (тип: {type(n_mats).__name__})")
             if n_mats < 1:
                 n_mats = 2  # Минимум 2 ковра
                 settings.set("tournament", "number_of_mats", n_mats)

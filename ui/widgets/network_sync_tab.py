@@ -108,6 +108,8 @@ class NetworkSyncTab(QWidget):
         self.start_btn.clicked.connect(self._on_start)
         self.stop_btn.clicked.connect(self._on_stop)
         self.push_btn.clicked.connect(self._on_push_schedule)
+        # Автоматически сохраняем mat_number при изменении (без перезапуска сервиса)
+        self.mat_spin.valueChanged.connect(self._on_mat_changed)
 
     def _load_defaults(self):
         self.role_combo.setCurrentText(self.settings.get("network", "role", "coordinator"))
@@ -148,17 +150,35 @@ class NetworkSyncTab(QWidget):
         self.settings.set("network", "device_name", name)
         self.settings.set("network", "coordinator_host", host)
         self.settings.set("network", "allow_relay", allow_relay)
+        
+        # ВАЖНО: также обновляем mat_number в сервисе, если он уже запущен
+        # Это нужно для случаев, когда пользователь меняет mat_number без перезапуска
+        if hasattr(self.schedule_sync, 'update_mat_number'):
+            self.schedule_sync.update_mat_number(mat)
 
     def _on_stop(self):
         if self.schedule_sync:
             self.schedule_sync.stop()
         self._log("Модуль остановлен")
 
+    def _on_mat_changed(self, value):
+        """Обработчик изменения номера ковра - автоматически сохраняет в настройки"""
+        # Сохраняем в настройки сразу при изменении
+        self.settings.set("network", "mat_number", value)
+        # Обновляем mat_number в сервисе, если он запущен
+        if self.schedule_sync and hasattr(self.schedule_sync, 'update_mat_number'):
+            self.schedule_sync.update_mat_number(value)
+            self._log(f"Номер ковра обновлён на {value}")
+
     def _on_push_schedule(self):
         if not self.tournament_data:
             self._log("Нет данных турнира")
             return
         if self.schedule_sync:
+            # Перед отправкой убеждаемся, что mat_number актуален
+            current_mat = self.mat_spin.value()
+            if hasattr(self.schedule_sync, 'update_mat_number'):
+                self.schedule_sync.update_mat_number(current_mat)
             self.schedule_sync.push_schedule(self.tournament_data)
 
     def _on_remote_schedule(self, schedule, sender_ip: str):

@@ -9,8 +9,8 @@ from PyQt5.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QStyle, QMainWindow,
     QLineEdit
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSize
-from PyQt5.QtGui import QFont, QTextDocument, QAbstractTextDocumentLayout, QBrush, QColor, QKeyEvent
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSize, QMimeData
+from PyQt5.QtGui import QFont, QTextDocument, QAbstractTextDocumentLayout, QBrush, QColor, QKeyEvent, QDrag
 
 from core.utils import get_wrestler_club
 
@@ -98,6 +98,176 @@ def filter_schedule_items(schedule, query="", mat_filter=None):
 
 
 # ===================================================================
+#  Кастомная таблица с drag-and-drop
+# ===================================================================
+class DragDropScheduleTable(QTableWidget):
+    """Таблица расписания с поддержкой drag-and-drop и множественного выделения."""
+    
+    def __init__(self, parent=None, tournament_data=None, on_drop_callback=None, mats_list=None):
+        super().__init__(parent)
+        self.tournament_data = tournament_data
+        self.on_drop_callback = on_drop_callback
+        self.mats_list = mats_list or []  # Список ковров для правильного определения целевого ковра
+        self.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.setSelectionBehavior(QTableWidget.SelectItems)
+        self.setDragDropMode(QTableWidget.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        
+    def startDrag(self, supportedActions):
+        """Начало перетаскивания - собираем данные о выделенных матчах."""
+        selected_items = self.selectedItems()
+        if not selected_items:
+            return
+        
+        # Собираем уникальные матчи из выделенных ячеек
+        matches_to_drag = []
+        seen_matches = set()
+        
+        for item in selected_items:
+            match = item.data(Qt.UserRole)
+            if match and isinstance(match, dict):
+                match_id = match.get('match_id')
+                if match_id and match_id not in seen_matches:
+                    seen_matches.add(match_id)
+                    matches_to_drag.append(match)
+        
+        if not matches_to_drag:
+            return
+        
+        # Создаем MIME данные
+        mime_data = QMimeData()
+        import json
+        matches_json = json.dumps(matches_to_drag)
+        mime_data.setText(matches_json)
+        mime_data.setData("application/x-schedule-match", matches_json.encode('utf-8'))
+        
+        # Создаем drag объект
+        drag = QDrag(self)
+        drag.setMimeData(mime_data)
+        
+        # Устанавливаем визуальное представление
+        if len(matches_to_drag) == 1:
+            drag_text = f"{matches_to_drag[0].get('category', '')} - {matches_to_drag[0].get('wrestler1', '')} vs {matches_to_drag[0].get('wrestler2', '')}"
+        else:
+            drag_text = f"{len(matches_to_drag)} матчей"
+        
+        from PyQt5.QtGui import QPixmap, QPainter
+        pixmap = QPixmap(200, 30)
+        pixmap.fill(QColor(240, 240, 240, 200))
+        painter = QPainter(pixmap)
+        painter.setPen(QColor(0, 0, 0))
+        painter.drawText(10, 20, drag_text)
+        painter.end()
+        drag.setPixmap(pixmap)
+        
+        # Запускаем drag
+        drag.exec_(supportedActions, Qt.MoveAction)
+    
+    def dragEnterEvent(self, event):
+        """Обработка входа перетаскивания в область таблицы."""
+        if event.mimeData().hasFormat("application/x-schedule-match"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dragMoveEvent(self, event):
+        """Обработка движения перетаскивания."""
+        if event.mimeData().hasFormat("application/x-schedule-match"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dropEvent(self, event):
+        """Обработка сброса перетаскивания."""
+        if not event.mimeData().hasFormat("application/x-schedule-match"):
+            event.ignore()
+            return
+        
+        # Получаем позицию сброса
+        drop_position = event.pos()
+        drop_row = self.rowAt(drop_position.y())
+        drop_col = self.columnAt(drop_position.x())
+        
+        # Определяем целевой ковер (колонка 0 - номер схватки, колонки 1+ - ковры)
+        if drop_col < 1:
+            event.ignore()
+            return
+        
+        # Получаем список ковров из заголовков
+        # Колонка 1 соответствует первому ковру в списке mats, колонка 2 - второму и т.д.
+        header_text = self.horizontalHeaderItem(drop_col)
+        if header_text:
+            header_str = header_text.text()
+            # Извлекаем номер ковра из заголовка "Ковёр N"
+            try:
+                target_mat = int(header_str.split()[-1])  # Берем последнее слово (номер)
+            except:
+                # Если не удалось извлечь, используем индекс колонки
+                # Колонка 1 -> mats[0], колонка 2 -> mats[1] и т.д.
+                if hasattr(self, 'mats_list') and drop_col - 1 < len(self.mats_list):
+                    target_mat = self.mats_list[drop_col - 1]
+                else:
+                    target_mat = drop_col
+        else:
+            # Fallback: используем индекс колонки
+            if hasattr(self, 'mats_list') and drop_col - 1 < len(self.mats_list):
+                target_mat = self.mats_list[drop_col - 1]
+            else:
+                target_mat = drop_col
+        
+        # Получаем данные о перетаскиваемых матчах
+        import json
+        matches_json = event.mimeData().data("application/x-schedule-match").data().decode('utf-8')
+        try:
+            dragged_matches = json.loads(matches_json)
+        except:
+            event.ignore()
+            return
+        
+        # Вызываем callback для обработки перетаскивания
+        if self.on_drop_callback:
+            self.on_drop_callback(dragged_matches, target_mat, drop_row)
+        
+        event.acceptProposedAction()
+    
+    def keyPressEvent(self, event):
+        """Обработка нажатий клавиш для выделения стрелками + Shift."""
+        if event.key() in (Qt.Key_Up, Qt.Key_Down) and event.modifiers() & Qt.ShiftModifier:
+            # Множественное выделение стрелками
+            current_row = self.currentRow()
+            current_col = self.currentColumn()
+            
+            if current_row < 0 or current_col < 0:
+                super().keyPressEvent(event)
+                return
+            
+            # Определяем новую строку
+            if event.key() == Qt.Key_Up:
+                new_row = max(0, current_row - 1)
+            else:  # Key_Down
+                new_row = min(self.rowCount() - 1, current_row + 1)
+            
+            # Выделяем ячейки в диапазоне от текущей до новой строки
+            start_row = min(current_row, new_row)
+            end_row = max(current_row, new_row)
+            
+            for row in range(start_row, end_row + 1):
+                # Выделяем все ячейки в строке, кроме колонки с номером схватки
+                for col in range(1, self.columnCount()):
+                    item = self.item(row, col)
+                    if item:
+                        item.setSelected(True)
+            
+            # Перемещаем курсор на новую строку
+            self.setCurrentCell(new_row, current_col)
+            event.accept()
+            return
+        
+        super().keyPressEvent(event)
+
+
+# ===================================================================
 #  ScheduleWindow
 # ===================================================================
 class ScheduleWindow(QWidget):
@@ -155,7 +325,7 @@ class ScheduleWindow(QWidget):
         self.update_data(self.tournament_data)
 
     @staticmethod
-    def build_schedule_table(schedule, mats, on_double_click, parent=None):
+    def build_schedule_table(schedule, mats, on_double_click, parent=None, tournament_data=None, on_drop_callback=None):
         """Общая сборка таблицы расписания (используется также расписанием на ковре).
         ВАЖНО: должен вызываться только из главного потока Qt!
         """
@@ -163,17 +333,39 @@ class ScheduleWindow(QWidget):
         if QApplication.instance() and QApplication.instance().thread() != QApplication.instance().thread():
             print("[WARNING] build_schedule_table вызван не из главного потока!")
         
+        n_mats = len(mats)
+        
         if not schedule:
-            empty = QTableWidget(parent)
+            # Даже если расписание пустое, показываем таблицу со всеми коврами
+            empty = DragDropScheduleTable(parent, tournament_data, on_drop_callback) if on_drop_callback else QTableWidget(parent)
             empty.setRowCount(1)
-            empty.setColumnCount(1)
+            empty.setColumnCount(1 + n_mats)
+            headers = ['№ схватки'] + [f'Ковёр {m}' for m in mats]
+            empty.setHorizontalHeaderLabels(headers)
             empty.setItem(0, 0, QTableWidgetItem("Расписание не сгенерировано"))
+            # Применяем стили
+            empty.setStyleSheet("""
+                QTableWidget {
+                    font-size: 16px; 
+                    gridline-color: #d0d0d0;
+                    background-color: #ffffff;
+                    border: 1px solid #dee2e6;
+                    border-radius: 8px;
+                }
+                QHeaderView::section {
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                        stop:0 #495057, stop:1 #343a40);
+                    color: white;
+                    font-weight: bold;
+                    padding: 12px;
+                    border: 1px solid #212529;
+                    font-size: 16px;
+                }
+            """)
             return empty
 
-        n_mats = len(mats)
-
         # Создаем таблицу с явным указанием родителя для правильного управления потоками
-        table = QTableWidget(parent)
+        table = DragDropScheduleTable(parent, tournament_data, on_drop_callback, mats) if on_drop_callback else QTableWidget(parent)
         # Максимум строк — количество матчей (по всем коврам); заполняем динамически по матовым счётчикам
         table.setRowCount(len(schedule) or 1)
         table.setColumnCount(1 + n_mats)
@@ -195,8 +387,11 @@ class ScheduleWindow(QWidget):
         table.setShowGrid(True)
         table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setSelectionMode(QTableWidget.SingleSelection)
-        table.setSelectionBehavior(QTableWidget.SelectRows)
+        if not isinstance(table, DragDropScheduleTable):
+            table.setSelectionMode(QTableWidget.ExtendedSelection)  # Множественное выделение
+            table.setSelectionBehavior(QTableWidget.SelectItems)  # Выделение отдельных ячеек для drag-and-drop
+            table.setDragDropMode(QTableWidget.DragDrop)  # Включаем drag-and-drop
+            table.setDefaultDropAction(Qt.MoveAction)
         table.setStyleSheet("""
             QTableWidget {
                 font-size: 16px; 
@@ -236,6 +431,10 @@ class ScheduleWindow(QWidget):
         
         if on_double_click:
             table.itemDoubleClicked.connect(on_double_click)
+        
+        # Добавляем контекстное меню
+        if isinstance(table, DragDropScheduleTable):
+            table.customContextMenuRequested.connect(lambda pos: ScheduleWindow._show_context_menu(table, pos, mats))
 
         # === НУМЕРАЦИЯ ===
         num_font = QFont()
@@ -336,17 +535,115 @@ class ScheduleWindow(QWidget):
 
     def get_filtered_schedule(self, mat_filter=None):
         return filter_schedule_items(self.tournament_data.get('schedule', []), self.search_query, mat_filter)
+    
+    def handle_drop(self, dragged_matches, target_mat, drop_row):
+        """Обработка перетаскивания матчей на другой ковер."""
+        if not self.tournament_data or 'schedule' not in self.tournament_data:
+            return
+        
+        schedule = self.tournament_data.get('schedule', [])
+        
+        # Обновляем ковер для всех перетаскиваемых матчей
+        for dragged_match in dragged_matches:
+            match_id = dragged_match.get('match_id')
+            if not match_id:
+                continue
+            
+            # Находим матч в расписании и обновляем его ковер
+            for match in schedule:
+                if match.get('match_id') == match_id:
+                    old_mat = match.get('mat')
+                    match['mat'] = target_mat
+                    print(f"[DRAG-DROP] Матч {match_id} перемещен с ковра {old_mat} на ковер {target_mat}")
+                    break
+        
+        # Обновляем отображение
+        self.update_data(self.tournament_data)
+        
+        # Если есть network_manager, синхронизируем изменения
+        if self.network_manager:
+            try:
+                self.network_manager.sync_schedule(self.tournament_data)
+            except Exception as e:
+                print(f"[ERROR] Ошибка синхронизации расписания после drag-and-drop: {e}")
+    
+    @staticmethod
+    def _show_context_menu(table, pos, mats):
+        """Показывает контекстное меню с опцией 'Выделить весь вес'."""
+        item = table.itemAt(pos)
+        if not item:
+            return
+        
+        match = item.data(Qt.UserRole)
+        if not match or not isinstance(match, dict):
+            return
+        
+        category = match.get('category', '')
+        if not category:
+            return
+        
+        menu = QMenu(table)
+        
+        # Опция "Выделить весь вес"
+        select_weight_action = QAction("Выделить весь вес", table)
+        select_weight_action.triggered.connect(lambda: ScheduleWindow._select_category_matches(table, category))
+        menu.addAction(select_weight_action)
+        
+        menu.exec_(table.mapToGlobal(pos))
+    
+    @staticmethod
+    def _select_category_matches(table, category):
+        """Выделяет все матчи указанной весовой категории."""
+        table.clearSelection()
+        
+        for row in range(table.rowCount()):
+            for col in range(1, table.columnCount()):  # Пропускаем колонку с номером схватки
+                item = table.item(row, col)
+                if item:
+                    match = item.data(Qt.UserRole)
+                    if match and isinstance(match, dict):
+                        if match.get('category') == category:
+                            item.setSelected(True)
 
     def create_schedule_table(self, mat_filter=None):
         schedule = self.get_filtered_schedule(mat_filter)
+        
+        # Получаем количество ковров из настроек, а не из расписания
+        try:
+            from core.settings import get_settings
+            settings = get_settings()
+            settings.load_settings()  # Перезагружаем настройки
+            n_mats = settings.get("tournament", "number_of_mats", 2)
+            if n_mats < 1:
+                n_mats = 2
+            # Создаем список всех ковров от 1 до n_mats
+            all_mats = list(range(1, n_mats + 1))
+        except Exception as e:
+            print(f"[WARNING] Не удалось получить количество ковров из настроек: {e}")
+            # Fallback: берем из расписания, если есть
+            if schedule:
+                all_mats = sorted({m['mat'] for m in schedule})
+            else:
+                all_mats = [1, 2]  # По умолчанию 2 ковра
+        
         if not schedule:
+            # Даже если расписание пустое, показываем таблицу со всеми коврами
             empty = QTableWidget(self)
             empty.setRowCount(1)
-            empty.setColumnCount(1)
+            empty.setColumnCount(1 + len(all_mats))
+            headers = ['№ схватки'] + [f'Ковёр {m}' for m in all_mats]
+            empty.setHorizontalHeaderLabels(headers)
             empty.setItem(0, 0, QTableWidgetItem("Расписание не сгенерировано"))
             return empty
-        mats = sorted({m['mat'] for m in schedule}) if not mat_filter else [mat_filter]
-        return self.build_schedule_table(schedule, mats, self.on_match_double_click, parent=self)
+        
+        # Если указан фильтр по ковру, показываем только этот ковер
+        mats = [mat_filter] if mat_filter else all_mats
+        return self.build_schedule_table(
+            schedule, mats, self.on_match_double_click, 
+            parent=self, 
+            tournament_data=self.tournament_data,
+            on_drop_callback=self.handle_drop
+        )
 
     @staticmethod
     def _make_match_html(match, mat=None):
@@ -665,7 +962,19 @@ class MatScheduleWindow(QWidget):
         mat_box.addWidget(mat_label)
         self.mat_combo = QComboBox()
         self.mat_combo.setFont(QFont("", 16))
-        self.mat_combo.addItems(["1", "2", "3", "4"])
+        # Получаем количество ковров из настроек
+        try:
+            from core.settings import get_settings
+            settings = get_settings()
+            settings.load_settings()
+            n_mats = settings.get("tournament", "number_of_mats", 2)
+            if n_mats < 1:
+                n_mats = 2
+            mat_items = [str(i) for i in range(1, n_mats + 1)]
+        except Exception as e:
+            print(f"[WARNING] Не удалось получить количество ковров из настроек: {e}")
+            mat_items = ["1", "2", "3", "4"]  # Fallback
+        self.mat_combo.addItems(mat_items)
         # Устанавливаем текущий номер ковра из настроек или переданного значения
         mat_index = self.current_mat - 1
         if 0 <= mat_index < self.mat_combo.count():
