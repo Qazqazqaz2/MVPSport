@@ -1884,30 +1884,52 @@ class ControlPanel(QWidget):
             try:
                 # Находим матч в расписании для отправки
                 match_update = None
+                match_id = target_match.get('id')
+                
                 if 'schedule' in self.tournament_data:
                     for s_match in self.tournament_data['schedule']:
-                        if s_match.get('match_id') == target_match.get('id'):
+                        # Проверяем оба варианта: match_id и id
+                        if s_match.get('match_id') == match_id or s_match.get('id') == match_id:
                             match_update = s_match.copy()
+                            # Убеждаемся, что match_id установлен
+                            if 'match_id' not in match_update:
+                                match_update['match_id'] = match_id
                             break
                 
                 # Если не нашли в расписании, создаем обновление из данных матча
                 if not match_update:
                     match_update = {
-                        'match_id': target_match.get('id'),
-                        'category': self.current_match_category,
-                        'wrestler1': target_match.get('wrestler1'),
-                        'wrestler2': target_match.get('wrestler2'),
+                        'match_id': match_id,
+                        'category': self.current_match_category or target_match.get('category', ''),
+                        'wrestler1': target_match.get('wrestler1', ''),
+                        'wrestler2': target_match.get('wrestler2', ''),
                         'winner': target_match.get('winner'),
                         'score1': target_match.get('score1', 0),
                         'score2': target_match.get('score2', 0),
-                        'completed': target_match.get('completed', False),
+                        'completed': target_match.get('completed', True),
                         'status': 'Завершен',
                         'completed_at': datetime.now().strftime("%H:%M"),
                     }
+                    # Добавляем mat, если есть
+                    if 'schedule' in self.tournament_data:
+                        for s_match in self.tournament_data['schedule']:
+                            if s_match.get('match_id') == match_id or s_match.get('id') == match_id:
+                                if 'mat' in s_match:
+                                    match_update['mat'] = s_match['mat']
+                                if 'time' in s_match:
+                                    match_update['time'] = s_match['time']
+                                break
+                
+                # Убеждаемся, что все необходимые поля присутствуют
+                if 'match_id' not in match_update or not match_update['match_id']:
+                    print(f"[ERROR] Не удалось создать обновление матча: нет match_id")
+                    return
                 
                 # Отправляем обновление матча в реальном времени
+                print(f"[SYNC] Отправка обновления матча {match_id}, данные: {list(match_update.keys())}")
+                print(f"[SYNC] Данные матча: winner={match_update.get('winner')}, score1={match_update.get('score1')}, score2={match_update.get('score2')}, completed={match_update.get('completed')}")
                 self.schedule_sync.send_match_update(match_update)
-                print(f"[SYNC] Обновление матча {target_match.get('id')} отправлено в реальном времени")
+                print(f"[SYNC] Обновление матча {match_id} отправлено в реальном времени")
             except Exception as e:
                 print(f"[ERROR] Ошибка синхронизации обновления матча: {e}")
                 import traceback

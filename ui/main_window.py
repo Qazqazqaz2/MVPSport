@@ -296,28 +296,45 @@ class EnhancedControlPanel(QMainWindow):
     
     def _on_match_update_safe(self, match_data, sender_ip=None):
         """Обработка обновления одного матча в реальном времени (вызывается из главного потока)."""
-        if not match_data or not self.tournament_data:
+        if not match_data:
+            print(f"[SYNC] Получено пустое обновление матча от {sender_ip}")
             return
         
-        match_id = match_data.get('match_id')
+        if not self.tournament_data:
+            print(f"[SYNC] Нет tournament_data для обработки обновления матча")
+            return
+        
+        match_id = match_data.get('match_id') or match_data.get('id')
         if not match_id:
+            print(f"[SYNC] Обновление матча без match_id: {match_data}")
             return
         
-        print(f"[SYNC] Получено обновление матча {match_id} от {sender_ip}")
+        print(f"[SYNC] Получено обновление матча {match_id} от {sender_ip}, данные: {list(match_data.keys())}")
         
         # Обновляем матч в расписании
         schedule = self.tournament_data.get('schedule', [])
         updated_in_schedule = False
         for s_match in schedule:
-            if s_match.get('match_id') == match_id:
+            # Проверяем оба варианта идентификатора
+            if s_match.get('match_id') == match_id or s_match.get('id') == match_id:
                 # Обновляем все поля из входящего матча
+                print(f"[SYNC] Найден матч в расписании, обновляю поля: {list(match_data.keys())}")
+                old_values = {k: s_match.get(k) for k in match_data.keys() if k in s_match}
                 s_match.update(match_data)
+                # Убеждаемся, что match_id установлен
+                if 'match_id' not in s_match:
+                    s_match['match_id'] = match_id
                 updated_in_schedule = True
+                print(f"[SYNC] Матч обновлен в расписании. Изменения: {[(k, old_values.get(k), s_match.get(k)) for k in match_data.keys() if old_values.get(k) != s_match.get(k)]}")
                 break
         
         # Если матча нет в расписании, добавляем его
         if not updated_in_schedule:
-            schedule.append(match_data)
+            print(f"[SYNC] Матч {match_id} не найден в расписании, добавляю")
+            # Убеждаемся, что match_id установлен
+            if 'match_id' not in match_data:
+                match_data['match_id'] = match_id
+            schedule.append(match_data.copy())
             self.tournament_data['schedule'] = schedule
         
         # Обновляем матч в категориях
@@ -340,20 +357,26 @@ class EnhancedControlPanel(QMainWindow):
         categories = self.tournament_data.get('categories', {})
         updated_categories = set()
         
-        # Ищем матч в категориях по match_id
+        # Ищем матч в категориях по match_id (проверяем оба варианта: id и match_id)
         for cat_name, cat_data in categories.items():
             matches = cat_data.get('matches', [])
             for match in matches:
-                if match.get('id') == match_id:
+                # Проверяем оба варианта идентификатора
+                if match.get('id') == match_id or match.get('match_id') == match_id:
                     # Обновляем результаты матча
                     updated = False
                     for key in ['winner', 'score1', 'score2', 'completed', 'status', 'completed_at']:
-                        if key in match_data and match.get(key) != match_data[key]:
-                            match[key] = match_data[key]
-                            updated = True
+                        if key in match_data:
+                            old_value = match.get(key)
+                            new_value = match_data[key]
+                            if old_value != new_value:
+                                match[key] = new_value
+                                updated = True
+                                print(f"[SYNC] Обновлено поле {key} в категории {cat_name}: {old_value} -> {new_value}")
                     
                     if updated:
                         updated_categories.add(cat_name)
+                        print(f"[SYNC] Матч {match_id} обновлен в категории {cat_name}")
                     break
         
         return updated_categories

@@ -219,6 +219,12 @@ class ScheduleSyncService:
     def send_match_update(self, match_data: Dict[str, Any]):
         """Отправка обновления одного матча в реальном времени всем узлам."""
         if not match_data:
+            self._log("[WARNING] send_match_update вызван с пустыми данными")
+            return
+        
+        match_id = match_data.get('match_id') or match_data.get('id')
+        if not match_id:
+            self._log("[WARNING] send_match_update вызван без match_id")
             return
         
         payload = {
@@ -230,8 +236,14 @@ class ScheduleSyncService:
             "device_id": self.device_id,
             "ts": time.time(),
         }
-        self._send(payload)
-        self._log(f"[sync] отправлено обновление матча {match_data.get('match_id', 'unknown')}")
+        
+        try:
+            self._send(payload)
+            self._log(f"[sync] отправлено обновление матча {match_id} (role={self.role}, mat={self.mat_number})")
+        except Exception as e:
+            self._log(f"[ERROR] Ошибка отправки обновления матча: {e}")
+            import traceback
+            self._log(traceback.format_exc())
 
     def update_mat_number(self, mat_number: int):
         self.mat_number = mat_number or 1
@@ -426,13 +438,22 @@ class ScheduleSyncService:
         elif msg_type == "match_update":
             # Обновление одного матча в реальном времени
             match_data = message.get("match")
-            if match_data and self.on_match_update:
-                self.on_match_update(match_data, sender_ip)
-            # Ретрансляция обновления матча для покрытия сети (только для node/relay, НЕ для coordinator)
-            if self.allow_relay and self.role != "coordinator":
+            if match_data:
+                self._log(f"[sync] получено обновление матча {match_data.get('match_id', 'unknown')} от {sender_ip}")
+                if self.on_match_update:
+                    try:
+                        self.on_match_update(match_data, sender_ip)
+                    except Exception as e:
+                        self._log(f"[ERROR] Ошибка обработки обновления матча: {e}")
+                        import traceback
+                        self._log(traceback.format_exc())
+            # Ретрансляция обновления матча для покрытия сети
+            # Coordinator тоже ретранслирует, чтобы все node получили обновление
+            if self.allow_relay:
                 relay_message = message.copy()
                 relay_message["mat"] = self.mat_number
                 self._send(relay_message)
+                self._log(f"[sync] обновление матча ретранслировано (role={self.role})")
         elif msg_type == "heartbeat":
             # Дополнительно ничего не делаем, peers уже обновили
             pass
