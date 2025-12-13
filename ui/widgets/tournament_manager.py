@@ -1599,6 +1599,8 @@ class TournamentManager(QWidget):
             self.regenerate_bracket(cat)
             self.on_category_selected(cat_item, None)
             self.generate_tournament_schedule()
+            # Синхронизируем изменения
+            self._sync_tournament_changes()
 
     def move_wrestler(self):
         cat_item = self.categories_list.currentItem()
@@ -1672,6 +1674,36 @@ class TournamentManager(QWidget):
 
         if self.bracket_window:
             self.bracket_window.update_bracket(cat)
+        
+        # Синхронизируем изменения
+        self._sync_tournament_changes()
+    
+    def _sync_tournament_changes(self):
+        """Синхронизирует изменения турнира через schedule_sync."""
+        schedule_sync = self._get_schedule_sync()
+        if schedule_sync and self.tournament_data:
+            try:
+                schedule_sync.push_schedule(self.tournament_data)
+                print(f"[SYNC] Изменения в турнире синхронизированы")
+            except Exception as e:
+                print(f"[ERROR] Ошибка синхронизации изменений турнира: {e}")
+    
+    def _get_schedule_sync(self):
+        """Получает schedule_sync из родительского окна."""
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'schedule_sync_service'):
+                return parent.schedule_sync_service
+            try:
+                parent = parent.parent()
+            except (AttributeError, RuntimeError):
+                break
+        # Если не нашли через родителя, ищем через QApplication
+        from PyQt5.QtWidgets import QApplication
+        for window in QApplication.topLevelWidgets():
+            if hasattr(window, 'schedule_sync_service'):
+                return window.schedule_sync_service
+        return None
 
     def make_all_round_robin(self):
         if not self.tournament_data or 'categories' not in self.tournament_data:
@@ -1715,6 +1747,8 @@ class TournamentManager(QWidget):
                 main_window.update_schedule_tab()
             if hasattr(self, 'mat_schedule_window') and self.mat_schedule_window:
                 self.mat_schedule_window.update_data(self.tournament_data)
+            # Синхронизируем изменения
+            self._sync_tournament_changes()
         except Exception as e:
             print(f"Ошибка расписания: {e}")
             import traceback

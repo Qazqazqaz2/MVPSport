@@ -1876,6 +1876,12 @@ class ControlPanel(QWidget):
         # Синхронизируем статус ковра
         if self.schedule_sync:
             self.schedule_sync.send_mat_status("completed", target_match.get('id'))
+            # Также отправляем обновленное расписание с результатами матча
+            try:
+                self.schedule_sync.push_schedule(self.tournament_data)
+                print(f"[SYNC] Расписание с результатами матча синхронизировано")
+            except Exception as e:
+                print(f"[ERROR] Ошибка синхронизации расписания после завершения матча: {e}")
         self.refresh_inline_schedule()
 
         # Сохраняем результат матча в БД (безопасно, с перехватом ошибок)

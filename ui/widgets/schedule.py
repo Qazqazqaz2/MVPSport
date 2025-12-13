@@ -560,12 +560,38 @@ class ScheduleWindow(QWidget):
         # Обновляем отображение
         self.update_data(self.tournament_data)
         
-        # Если есть network_manager, синхронизируем изменения
-        if self.network_manager:
+        # Синхронизируем изменения через schedule_sync (приоритет) и network_manager
+        schedule_sync = self._get_schedule_sync()
+        if schedule_sync:
             try:
-                self.network_manager.sync_schedule(self.tournament_data)
+                schedule_sync.push_schedule(self.tournament_data)
+                print(f"[DRAG-DROP] Расписание синхронизировано через schedule_sync")
             except Exception as e:
-                print(f"[ERROR] Ошибка синхронизации расписания после drag-and-drop: {e}")
+                print(f"[ERROR] Ошибка синхронизации расписания через schedule_sync после drag-and-drop: {e}")
+        elif self.network_manager:
+            try:
+                # Fallback на network_manager если schedule_sync недоступен
+                if hasattr(self.network_manager, 'sync_schedule'):
+                    self.network_manager.sync_schedule(self.tournament_data)
+            except Exception as e:
+                print(f"[ERROR] Ошибка синхронизации расписания через network_manager после drag-and-drop: {e}")
+    
+    def _get_schedule_sync(self):
+        """Получает schedule_sync из родительского окна."""
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'schedule_sync_service'):
+                return parent.schedule_sync_service
+            try:
+                parent = parent.parent()
+            except (AttributeError, RuntimeError):
+                break
+        # Если не нашли через родителя, ищем через QApplication
+        from PyQt5.QtWidgets import QApplication
+        for window in QApplication.topLevelWidgets():
+            if hasattr(window, 'schedule_sync_service'):
+                return window.schedule_sync_service
+        return None
     
     @staticmethod
     def _show_context_menu(table, pos, mats):
@@ -1192,6 +1218,8 @@ class MatScheduleWindow(QWidget):
 
         match['status'] = 'В процессе'
         match['started_at'] = datetime.now().strftime("%H:%M")
+        # Синхронизируем изменения
+        self._sync_schedule_changes()
 
         match_data = {
             'wrestler1': {
@@ -1237,6 +1265,8 @@ class MatScheduleWindow(QWidget):
             m['status'] = 'Завершен'
             m['completed_at'] = datetime.now().strftime("%H:%M")
             self.update_mat_schedule()
+            # Синхронизируем изменения
+            self._sync_schedule_changes()
 
     def reset_match(self, row):
         item = self.schedule_table.item(row, 1) if self.schedule_table else None
@@ -1246,6 +1276,35 @@ class MatScheduleWindow(QWidget):
             for k in ('started_at', 'completed_at'):
                 m.pop(k, None)
             self.update_mat_schedule()
+            # Синхронизируем изменения
+            self._sync_schedule_changes()
+    
+    def _get_schedule_sync(self):
+        """Получает schedule_sync из родительского окна."""
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'schedule_sync_service'):
+                return parent.schedule_sync_service
+            try:
+                parent = parent.parent()
+            except (AttributeError, RuntimeError):
+                break
+        # Если не нашли через родителя, ищем через QApplication
+        from PyQt5.QtWidgets import QApplication
+        for window in QApplication.topLevelWidgets():
+            if hasattr(window, 'schedule_sync_service'):
+                return window.schedule_sync_service
+        return None
+    
+    def _sync_schedule_changes(self):
+        """Синхронизирует изменения расписания через schedule_sync."""
+        schedule_sync = self._get_schedule_sync()
+        if schedule_sync and self.tournament_data:
+            try:
+                schedule_sync.push_schedule(self.tournament_data)
+                print(f"[SYNC] Изменения в расписании синхронизированы")
+            except Exception as e:
+                print(f"[ERROR] Ошибка синхронизации изменений расписания: {e}")
 
     # --------------------------------------------------------------
     #  Обновление данных
