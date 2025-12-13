@@ -819,17 +819,36 @@ class ScheduleWindow(QWidget):
             old_table = self.schedule_table
             layout = self.layout()
             
-            # Сначала удаляем из layout
-            if old_table.parent() == self:
-                layout.removeWidget(old_table)
-            
-            # Затем очищаем родителя и удаляем безопасно
-            # Проверяем, что мы в главном потоке перед операциями с виджетами
+            # Проверяем, что виджет еще существует и не удален
             try:
-                old_table.setParent(None)
-                old_table.deleteLater()
-            except RuntimeError:
+                # Проверяем, что виджет еще существует
+                if old_table is None:
+                    self.schedule_table = None
+                    QTimer.singleShot(10, self._create_new_table)
+                    return
+                
+                # Сначала удаляем из layout
+                try:
+                    if old_table.parent() == self:
+                        layout.removeWidget(old_table)
+                except (RuntimeError, AttributeError):
+                    # Виджет уже удален из layout
+                    pass
+                
+                # Затем очищаем родителя и удаляем безопасно
+                # Используем deleteLater вместо setParent для безопасности
+                try:
+                    # Проверяем, что виджет еще существует перед удалением
+                    if old_table.isWidgetType():
+                        old_table.deleteLater()
+                except (RuntimeError, AttributeError):
+                    # Виджет уже удален или находится в процессе удаления
+                    pass
+                
+                self.schedule_table = None
+            except (RuntimeError, AttributeError) as e:
                 # Если виджет уже удален или находится в другом потоке, просто пропускаем
+                self.schedule_table = None
                 pass
             
             # Небольшая задержка перед созданием нового виджета для завершения удаления
@@ -838,6 +857,7 @@ class ScheduleWindow(QWidget):
             print(f"[ERROR] Ошибка обновления расписания: {e}")
             import traceback
             traceback.print_exc()
+            self.schedule_table = None
     
     def _create_new_table(self):
         """Создает новую таблицу после удаления старой"""
@@ -1086,11 +1106,17 @@ class MatScheduleWindow(QWidget):
             
             if old_table:
                 try:
-                    if old_table.parent() == self:
-                        layout.removeWidget(old_table)
-                    old_table.setParent(None)
-                    old_table.deleteLater()
-                except RuntimeError:
+                    # Проверяем, что виджет еще существует
+                    if old_table.isWidgetType():
+                        try:
+                            if old_table.parent() == self:
+                                layout.removeWidget(old_table)
+                        except (RuntimeError, AttributeError):
+                            # Виджет уже удален из layout
+                            pass
+                        # Используем deleteLater вместо setParent для безопасности
+                        old_table.deleteLater()
+                except (RuntimeError, AttributeError):
                     # Если виджет уже удален или находится в другом потоке, просто пропускаем
                     pass
             
@@ -1098,10 +1124,13 @@ class MatScheduleWindow(QWidget):
             
             if self._table_placeholder:
                 try:
-                    layout.replaceWidget(self._table_placeholder, self.schedule_table)
-                    self._table_placeholder.setParent(None)
+                    # Проверяем, что placeholder еще существует
+                    if self._table_placeholder.isWidgetType():
+                        layout.replaceWidget(self._table_placeholder, self.schedule_table)
+                        # Используем deleteLater вместо setParent для безопасности
+                        self._table_placeholder.deleteLater()
                     self._table_placeholder = None
-                except RuntimeError:
+                except (RuntimeError, AttributeError):
                     # Если виджет уже удален или находится в другом потоке, просто пропускаем
                     self._table_placeholder = None
             else:

@@ -266,7 +266,7 @@ def generate_schedule(tournament_data, start_time="10:00", match_duration=8, n_m
     if not all_matches:
         return schedule
     
-    # Группируем матчи по категориям
+    # Группируем матчи по категориям для получения раундов
     matches_by_category = {}
     for match in all_matches:
         category = match["category"]
@@ -274,142 +274,86 @@ def generate_schedule(tournament_data, start_time="10:00", match_duration=8, n_m
             matches_by_category[category] = []
         matches_by_category[category].append(match)
     
-    # Распределяем категории по коврам (каждая категория целиком на одном ковре)
-    # Сортируем категории по весу для сохранения порядка
+    # НОВАЯ ЛОГИКА: Распределяем матчи по коврам равномерно (round-robin)
+    # Сначала собираем все матчи с их раундами, сортируя по категориям
+    all_matches_with_rounds = []
     categories_list = sorted(
         matches_by_category.keys(),
         key=lambda cat: extract_weight(cat)
     )
     
-    # Используем жадный алгоритм для балансировки нагрузки:
-    # категорию с большим количеством матчей размещаем на ковре с наименьшим количеством матчей
-    categories_per_mat = [[] for _ in range(n_mats)]
-    mat_match_counts = [0] * n_mats  # Счетчики матчей на каждом ковре
+    for category in categories_list:
+        matches = matches_by_category[category]
+        cat_data = tournament_data["categories"].get(category, {})
+        cat_matches = cat_data.get("matches", [])
+        
+        for idx, match in enumerate(matches):
+            # Ищем исходный матч в категории для получения правильного раунда
+            match_round = idx + 1  # По умолчанию
+            for cat_match in cat_matches:
+                if cat_match.get("id") == match["match_id"]:
+                    match_round = cat_match.get("round", idx + 1)
+                    break
+            
+            all_matches_with_rounds.append({
+                "match": match,
+                "round": match_round,
+                "category": category
+            })
     
-    # Сортируем категории по количеству матчей (от большего к меньшему) для лучшего распределения
-    categories_with_counts = [(cat, len(matches_by_category[cat])) for cat in categories_list]
-    categories_with_counts.sort(key=lambda x: x[1], reverse=True)
-    
-    # Распределяем категории по коврам
-    print(f"[DEBUG generate_schedule] n_mats={n_mats} (тип: {type(n_mats).__name__}), категорий: {len(categories_with_counts)}")
-    print(f"[DEBUG generate_schedule] categories_per_mat имеет {len(categories_per_mat)} элементов")
-    print(f"[DEBUG generate_schedule] mat_match_counts имеет {len(mat_match_counts)} элементов")
+    print(f"[DEBUG generate_schedule] n_mats={n_mats} (тип: {type(n_mats).__name__}), всего матчей: {len(all_matches_with_rounds)}")
     
     if n_mats == 0:
         print(f"[ERROR generate_schedule] n_mats равен 0! Исправляем на 2")
         n_mats = 2
-        categories_per_mat = [[] for _ in range(n_mats)]
-        mat_match_counts = [0] * n_mats
     
-    # Распределяем категории по коврам с чередованием для равномерного распределения
-    for idx, (category, match_count) in enumerate(categories_with_counts):
-        if n_mats > 0:
-            # Находим все ковры с минимальным количеством матчей
-            min_count = min(mat_match_counts)
-            mats_with_min_count = [i for i in range(n_mats) if mat_match_counts[i] == min_count]
-            
-            # Если среди ковров с минимальной нагрузкой есть предпочитаемый ковёр — используем его
-            if preferred_mat_index is not None and preferred_mat_index in mats_with_min_count:
-                mat_index = preferred_mat_index
-            else:
-                # Чередуем между коврами с минимальной нагрузкой
-                mat_index = mats_with_min_count[idx % len(mats_with_min_count)]
-            
-            print(f"[DEBUG generate_schedule] Категория '{category}' ({match_count} матчей): мин.счётчик={min_count}, ковры с мин.счётчиком={mats_with_min_count}, выбран ковёр {mat_index + 1} (индекс {mat_index}), preferred={preferred_mat_index}")
-        else:
-            mat_index = 0
-        # Назначаем категорию на этот ковёр
-        categories_per_mat[mat_index].append(category)
-        # Обновляем счётчик матчей на ковре
-        mat_match_counts[mat_index] += match_count
-        print(f"[DEBUG generate_schedule] После назначения: счётчики матчей по коврам = {mat_match_counts}")
+    # Распределяем матчи по коврам равномерно
+    # Если есть предпочитаемый ковёр, начинаем с него, но распределяем по всем коврам
+    mat_match_counts = [0] * n_mats
+    matches_per_mat = [[] for _ in range(n_mats)]
     
-    print(f"[DEBUG generate_schedule] Распределение по коврам: {[len(cats) for cats in categories_per_mat]}")
-    print(f"[DEBUG generate_schedule] Матчей по коврам: {mat_match_counts}")
-    if len(categories_per_mat) > 0:
-        print(f"[DEBUG generate_schedule] Категории на ковре 1: {categories_per_mat[0]}")
-    if len(categories_per_mat) > 1:
-        print(f"[DEBUG generate_schedule] Категории на ковре 2: {categories_per_mat[1]}")
+    # Определяем начальный индекс ковра (если есть предпочитаемый, начинаем с него)
+    start_mat_index = preferred_mat_index if (preferred_mat_index is not None and 0 <= preferred_mat_index < n_mats) else 0
     
-    # Генерируем расписание: для каждого ковра распределяем матчи его категорий по времени
-    # Матчи разных категорий на одном ковре чередуются по порядку для отдыха участников
+    for idx, match_info in enumerate(all_matches_with_rounds):
+        # Распределяем по коврам с учетом предпочитаемого ковра
+        mat_index = (start_mat_index + idx) % n_mats
+        matches_per_mat[mat_index].append(match_info)
+        mat_match_counts[mat_index] += 1
+    
+    print(f"[DEBUG generate_schedule] Распределение матчей по коврам: {mat_match_counts}")
+    print(f"[DEBUG generate_schedule] Начальный ковёр: {start_mat_index + 1} (индекс {start_mat_index}), preferred_mat_index={preferred_mat_index}")
+    
+    # Генерируем расписание: для каждого ковра распределяем матчи по времени
     for mat_index in range(n_mats):
-        print(f"[DEBUG generate_schedule] Обработка ковра {mat_index + 1} (индекс {mat_index}), категорий на ковре: {len(categories_per_mat[mat_index])}")
-        if len(categories_per_mat[mat_index]) == 0:
-            print(f"[DEBUG generate_schedule] На ковре {mat_index + 1} нет категорий, пропускаем")
+        print(f"[DEBUG generate_schedule] Обработка ковра {mat_index + 1} (индекс {mat_index}), матчей на ковре: {len(matches_per_mat[mat_index])}")
+        if len(matches_per_mat[mat_index]) == 0:
+            print(f"[DEBUG generate_schedule] На ковре {mat_index + 1} нет матчей, пропускаем")
             continue
+        
         current_time = datetime.strptime(start_time, "%H:%M")
         
-        # Собираем все матчи всех категорий этого ковра с их раундами
-        mat_matches_by_category = {}
-        for category in categories_per_mat[mat_index]:
-            print(f"[DEBUG generate_schedule] Обработка категории '{category}' на ковре {mat_index + 1}")
-            matches = matches_by_category[category]
-            cat_data = tournament_data["categories"].get(category, {})
-            cat_matches = cat_data.get("matches", [])
+        # Добавляем матчи этого ковра в расписание
+        for match_info in matches_per_mat[mat_index]:
+            match = match_info["match"]
+            mat_number = mat_index + 1
+            schedule_item = {
+                "time": current_time.strftime("%H:%M"),
+                "mat": mat_number,
+                "category": match["category"],
+                "wrestler1": match["wrestler1"],
+                "wrestler2": match["wrestler2"],
+                "club1": match.get("club1", ""),
+                "club2": match.get("club2", ""),
+                "match_id": match["match_id"],
+                "round": match_info["round"]
+            }
+            schedule.append(schedule_item)
+            if len(schedule) <= 5:  # Выводим только первые 5 для отладки
+                print(f"[DEBUG generate_schedule] Добавлен матч #{len(schedule)}: категория '{match['category']}', ковёр {mat_number} (mat_index={mat_index}), время {schedule_item['time']}")
             
-            # Создаем список матчей с раундами
-            category_matches = []
-            for idx, match in enumerate(matches):
-                # Ищем исходный матч в категории для получения правильного раунда
-                match_round = idx + 1  # По умолчанию
-                for cat_match in cat_matches:
-                    if cat_match.get("id") == match["match_id"]:
-                        match_round = cat_match.get("round", idx + 1)
-                        break
-                
-                category_matches.append({
-                    "match": match,
-                    "round": match_round,
-                    "index": idx  # Индекс в списке матчей категории
-                })
-            
-            mat_matches_by_category[category] = category_matches
-        
-        # Чередуем матчи разных категорий по порядку (первый матч каждой категории, затем второй и т.д.)
-        # Находим максимальное количество матчей среди всех категорий на этом ковре
-        max_matches = 0
-        for category_matches in mat_matches_by_category.values():
-            max_matches = max(max_matches, len(category_matches))
-        
-        # Распределяем матчи, чередуя категории
-        for match_index in range(max_matches):
-            # Для каждого индекса собираем матчи из всех категорий
-            round_matches = []
-            for category, category_matches in mat_matches_by_category.items():
-                # Берем матч с нужным индексом, если он есть
-                if match_index < len(category_matches):
-                    match_info = category_matches[match_index]
-                    round_matches.append({
-                        "category": category,
-                        "match": match_info["match"],
-                        "round": match_info["round"]
-                    })
-            
-            # Сортируем матчи по категории для стабильного порядка
-            round_matches.sort(key=lambda x: x["category"])
-            
-            # Добавляем матчи в расписание
-            for match_info in round_matches:
-                match = match_info["match"]
-                mat_number = mat_index + 1
-                schedule_item = {
-                    "time": current_time.strftime("%H:%M"),
-                    "mat": mat_number,
-                    "category": match["category"],
-                    "wrestler1": match["wrestler1"],
-                    "wrestler2": match["wrestler2"],
-                    "club1": match.get("club1", ""),
-                    "club2": match.get("club2", ""),
-                    "match_id": match["match_id"],
-                    "round": match_info["round"]
-                }
-                schedule.append(schedule_item)
-                if len(schedule) <= 5:  # Выводим только первые 5 для отладки
-                    print(f"[DEBUG generate_schedule] Добавлен матч #{len(schedule)}: категория '{match['category']}', ковёр {mat_number} (mat_index={mat_index}), время {schedule_item['time']}")
-                
-                # Увеличиваем время для следующего матча
-                current_time += timedelta(minutes=match_duration)
+            # Увеличиваем время для следующего матча
+            current_time += timedelta(minutes=match_duration)
     
     # Отладочная информация о результате
     mats_in_result = {}

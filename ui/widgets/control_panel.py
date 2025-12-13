@@ -743,12 +743,23 @@ class InlineMatScheduleWidget(QWidget):
             mat_matches, [mat_number], on_double_click=None, parent=self
         )
         if self.table:
-            self.layout().replaceWidget(self.table, new_table)
-            self.table.setParent(None)
-            self.table.deleteLater()
+            try:
+                self.layout().replaceWidget(self.table, new_table)
+                # Используем deleteLater вместо setParent для безопасности
+                if self.table.isWidgetType():
+                    self.table.deleteLater()
+            except (RuntimeError, AttributeError):
+                # Виджет уже удален
+                pass
         else:
-            self.layout().replaceWidget(self._placeholder, new_table)
-            self._placeholder.setParent(None)
+            try:
+                self.layout().replaceWidget(self._placeholder, new_table)
+                # Используем deleteLater вместо setParent для безопасности
+                if self._placeholder.isWidgetType():
+                    self._placeholder.deleteLater()
+            except (RuntimeError, AttributeError):
+                # Виджет уже удален
+                pass
         self.table = new_table
 class ControlPanel(QWidget):
     update_display_signal = pyqtSignal()

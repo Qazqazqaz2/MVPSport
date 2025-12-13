@@ -413,7 +413,13 @@ class CategoriesManagerTab(QWidget):
         for i in reversed(range(self.expanded_layout.count())):
             child = self.expanded_layout.itemAt(i).widget()
             if child:
-                child.setParent(None)
+                try:
+                    # Используем deleteLater вместо setParent для безопасности
+                    if child.isWidgetType():
+                        child.deleteLater()
+                except (RuntimeError, AttributeError):
+                    # Виджет уже удален
+                    pass
 
         cat_data = self.tournament_data['categories'][category_name]
 

@@ -353,7 +353,10 @@ class ScheduleSyncService:
                 # Ретрансляция при необходимости (только для node/relay, НЕ для coordinator)
                 # Coordinator принимает расписание, но не отправляет его обратно, чтобы избежать циклов
                 if self.allow_relay and self.role != "coordinator":
-                    self._send(message)
+                    # Обновляем поле "mat" на номер ковра текущего узла при ретрансляции
+                    relay_message = message.copy()
+                    relay_message["mat"] = self.mat_number
+                    self._send(relay_message)
         elif msg_type == "schedule_chunk":
             transfer_id = message.get("transfer_id") or message.get("schedule_hash") or ""
             chunk_idx = message.get("chunk_index")
@@ -376,7 +379,10 @@ class ScheduleSyncService:
 
             # Ретрансляция чанка для покрытия сети (аналогично полной отправке)
             if self.allow_relay and self.role != "coordinator":
-                self._send(message)
+                # Обновляем поле "mat" на номер ковра текущего узла при ретрансляции
+                relay_message = message.copy()
+                relay_message["mat"] = self.mat_number
+                self._send(relay_message)
 
             # Проверяем, собрали ли всё
             if len(entry["received"]) >= entry["total"]:
